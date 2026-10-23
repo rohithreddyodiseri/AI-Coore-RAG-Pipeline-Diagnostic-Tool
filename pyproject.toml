@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "open-ragbench-pipeline"
+version = "0.1.0"
+description = "A simple command-line RAG pipeline over the Open RAGBench corpus."
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+  "chromadb>=1.0,<2",
+  "huggingface-hub>=0.30,<2",
+  "langchain-text-splitters>=0.3,<2",
+  "openai>=1.75,<3",
+  "python-dotenv>=1.0,<2",
+  "sentence-transformers>=4.0,<6",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<10",
+  "ruff>=0.11,<1",
+]
+
+[project.scripts]
+rag-pipeline = "rag_pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
