@@ -70,7 +70,7 @@ OPENAI_API_KEY=your_openai_api_key
 
 ## 5. Build the index
 
-Now run the below command to chunk, embed and store the indexies into the database.
+Now run the below command to chunk, embed and store the indexies into the database. This process can take a while.
 
 ```bash
 rag-pipeline index --reset
