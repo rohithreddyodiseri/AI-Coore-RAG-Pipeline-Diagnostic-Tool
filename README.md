@@ -34,13 +34,15 @@ and rate-limit problems.
 
 1. Open [Hugging Face Settings → Access Tokens](https://huggingface.co/settings/tokens).
 2. Create a token with `read` permission.
-3. Export it in the same terminal:
-
+3. Create .env file in the root directory.
+4. Write HF token to the .env file.
 ```bash
-export HF_TOKEN="your_hf_token_here"
+HF_TOKEN="your_hf_token_here"
 ```
 
 ## 3. Download the dataset
+
+Now download the dataset from Hugging Face. Run the below script.
 
 ```bash
 python download-dataset.py
@@ -48,6 +50,8 @@ python download-dataset.py
 
 By default, the script downloads `vectara/open_ragbench` into
 `data/open_ragbench`. Both values can be changed:
+
+Optional -
 
 ```bash
 python download-dataset.py --repo-id vectara/open_ragbench --output data/open_ragbench
@@ -58,11 +62,15 @@ python download-dataset.py --repo-id vectara/open_ragbench --output data/open_ra
 The application reads `OPENAI_API_KEY` from the environment or from the `.env`
 file in this project or its parent directory.
 
+1. Write OpenAI Api key to the .env file
+
 ```env
 OPENAI_API_KEY=your_openai_api_key
 ```
 
 ## 5. Build the index
+
+Now run the below command to chunk, embed and store the indexies into the database.
 
 ```bash
 rag-pipeline index --reset
@@ -73,6 +81,8 @@ This reads the default corpus directory:
 ```text
 data/open_ragbench/pdf/arxiv/corpus
 ```
+
+Optional - 
 
 To use another compatible corpus folder:
 
@@ -85,6 +95,8 @@ Section text and Markdown tables are indexed. Image data is skipped because the
 embedding model is text-only.
 
 ## 6. Ask a question
+
+Now send a query to get a response.
 
 ```bash
 rag-pipeline ask "What methods are used to improve retrieval quality?"
