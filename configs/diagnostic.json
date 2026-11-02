@@ -1,0 +1,12 @@
+{
+  "match_threshold": 0.9,
+  "deep_k": 100,
+  "abstain_below": 0.6,
+  "judge": "reference_recall",
+  "judge_threshold": 0.8,
+  "judge_model": "gpt-4o-mini",
+  "judge_cache": "runs/judge_cache.json",
+  "held_out_fraction": 0.3,
+  "split_seed": "fall-2026",
+  "runs_dir": "runs"
+}

@@ -1,0 +1,13 @@
+{"case_id": "toy-01", "stages": [], "fault_type": "none"}
+{"case_id": "toy-02", "stages": ["parsing"], "fault_type": "parse_dropped_evidence"}
+{"case_id": "toy-03", "stages": ["chunking"], "fault_type": "chunk_split_evidence"}
+{"case_id": "toy-04", "stages": ["indexing"], "fault_type": "index_missing_chunk"}
+{"case_id": "toy-05", "stages": ["retrieval"], "fault_type": "retrieval_low_rank"}
+{"case_id": "toy-06", "stages": ["reranking"], "fault_type": "rerank_buried"}
+{"case_id": "toy-07", "stages": ["context"], "fault_type": "context_truncated"}
+{"case_id": "toy-08", "stages": ["generation"], "fault_type": "generation_wrong_with_evidence"}
+{"case_id": "toy-09", "stages": ["generation"], "fault_type": "generation_distracted"}
+{"case_id": "toy-10", "stages": ["indexing", "generation"], "fault_type": "multi_index_generation"}
+{"case_id": "toy-11", "stages": ["retrieval", "reranking"], "fault_type": "multi_retrieval_rerank"}
+{"case_id": "toy-12", "stages": ["corpus"], "fault_type": "answer_not_in_corpus"}
+{"case_id": "toy-13", "stages": ["parsing"], "fault_type": "parse_dropped_no_raw"}

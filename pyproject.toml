@@ -25,6 +25,7 @@ dev = [
 
 [project.scripts]
 rag-pipeline = "rag_pipeline.cli:main"
+rag-diagnose = "rag_diagnostic.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
