@@ -31,6 +31,7 @@ class Settings:
     chunk_overlap: int
     batch_size: int
     top_k: int
+    diagnostics_dir: Path = PROJECT_ROOT / "data/diagnostics"
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -49,6 +50,9 @@ class Settings:
             chunk_overlap=int(os.getenv("RAG_CHUNK_OVERLAP", "120")),
             batch_size=int(os.getenv("RAG_BATCH_SIZE", "64")),
             top_k=int(os.getenv("RAG_TOP_K", "5")),
+            diagnostics_dir=_path_from_env(
+                "RAG_DIAGNOSTICS_DIR", PROJECT_ROOT / "data/diagnostics"
+            ),
         )
 
     def validate(self) -> None:
