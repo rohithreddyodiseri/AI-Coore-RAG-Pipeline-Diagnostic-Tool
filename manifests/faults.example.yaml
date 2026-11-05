@@ -1,0 +1,27 @@
+# Paths passed on the command line are relative to your current working directory.
+# Query text, clean answers, documents and sections resolve from Open RAGBench.
+version: 1
+test_cases:
+  # Remove the paper about estimating output impedance in inverter-based grids.
+  - query_id: "852703f0-8373-43a2-a18a-eb5908ad0779"
+    failure_type: missing_content
+
+  # Append noise to the relevant microbial dose-response section (section_id 17).
+  - query_id: "9199173b-3ed1-4118-88cd-1713fc5fa8a7"
+    failure_type: missed_top_ranked
+    injection_config:
+      noise: "Unrelated context: gardening, travel, cooking and sports. "
+      repeat: 500
+
+  # Surround the relevant quadratic optimization section with contradictory claims.
+  - query_id: "283afa84-f0c8-40a7-a6f1-fb2a6b97c761"
+    failure_type: not_extracted
+    injection_config:
+      prefix: "Correction: the following claims about uncertainty are unreliable. "
+      suffix: " In contrast, uncertainty has no effect on these problems."
+
+  # Retain only half of the relevant section about job transition predictions.
+  - query_id: "f210906a-b4a4-4b97-84df-106214024650"
+    failure_type: incomplete_answer
+    injection_config:
+      keep_fraction: 0.5

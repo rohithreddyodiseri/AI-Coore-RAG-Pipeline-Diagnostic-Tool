@@ -32,12 +32,19 @@ def _parser(defaults: Settings) -> argparse.ArgumentParser:
     ask.add_argument("--embedding-model", default=defaults.embedding_model)
     ask.add_argument("--llm-model", default=defaults.llm_model)
     ask.add_argument("--top-k", type=int, default=defaults.top_k)
+    ask.add_argument(
+        "--diagnostics-dir",
+        type=Path,
+        default=defaults.diagnostics_dir,
+        help="directory for per-query JSONL pipeline traces",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> None:
     defaults = Settings.from_env()
     args = _parser(defaults).parse_args(argv)
+    pipeline: RAGPipeline | None = None
 
     try:
         if args.command == "index":
@@ -69,16 +76,21 @@ def main(argv: list[str] | None = None) -> None:
             embedding_model=args.embedding_model,
             llm_model=args.llm_model,
             top_k=args.top_k,
+            diagnostics_dir=args.diagnostics_dir.expanduser().resolve(),
         )
-        answer, sources = RAGPipeline(settings).ask(args.query)
+        pipeline = RAGPipeline(settings)
+        answer, sources = pipeline.ask(args.query)
         print(f"\n{answer}\n\nSources:")
         titles = dict.fromkeys(source.metadata.get("title", "Untitled") for source in sources)
         for number, title in enumerate(titles, start=1):
             print(f"[{number}] {title}")
+        print(f"\nDiagnostics: {pipeline.last_trace_path}", file=sys.stderr)
     except KeyboardInterrupt:
         raise SystemExit(130) from None
     except Exception as error:
         print(f"Error: {error}", file=sys.stderr)
+        if pipeline is not None and pipeline.last_trace_path is not None:
+            print(f"Diagnostics: {pipeline.last_trace_path}", file=sys.stderr)
         raise SystemExit(1) from error
 
 

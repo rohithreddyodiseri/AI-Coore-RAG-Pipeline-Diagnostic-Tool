@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from rag_pipeline.config import Settings, load_environment
 from rag_pipeline.corpus import Document
+from rag_pipeline.diagnostics import PipelineTrace
 
 
 @dataclass(frozen=True)
@@ -21,6 +23,7 @@ class RAGPipeline:
         self.settings = settings
         self._embedder: Any = None
         self._collection: Any = None
+        self.last_trace_path: Path | None = None
 
     def _embedding_model(self) -> Any:
         if self._embedder is None:
@@ -121,38 +124,127 @@ class RAGPipeline:
         save_batch()
         return indexed
 
-    def retrieve(self, query: str) -> list[SearchResult]:
+    def retrieve(self, query: str, trace: PipelineTrace | None = None) -> list[SearchResult]:
         collection = self._open_collection(create=False)
         item_count = collection.count()
         if item_count == 0:
             raise RuntimeError("The index is empty. Run `rag-pipeline index --reset` first.")
-        response = collection.query(
-            query_embeddings=self._embed([query]),
-            n_results=min(self.settings.top_k, item_count),
-            include=["documents", "metadatas"],
+        def embed() -> list[list[float]]:
+            return self._embed([query])
+
+        embeddings = (
+            trace.capture(
+                "query_embedding",
+                {"texts": [query], "model": self.settings.embedding_model},
+                embed,
+            )
+            if trace
+            else embed()
         )
-        documents = (response.get("documents") or [[]])[0]
-        metadata = (response.get("metadatas") or [[]])[0]
-        return [
-            SearchResult(text=str(text), metadata=dict(item or {}))
-            for text, item in zip(documents, metadata, strict=True)
-        ]
+
+        retrieval_inputs = {
+            "collection": self.settings.collection,
+            "query_embeddings": embeddings,
+            "n_results": min(self.settings.top_k, item_count),
+            "include": ["documents", "metadatas"],
+        }
+
+        def search() -> list[SearchResult]:
+            response = collection.query(
+                query_embeddings=embeddings,
+                n_results=min(self.settings.top_k, item_count),
+                include=["documents", "metadatas"],
+            )
+            documents = (response.get("documents") or [[]])[0]
+            metadata = (response.get("metadatas") or [[]])[0]
+            return [
+                SearchResult(text=str(text), metadata=dict(item or {}))
+                for text, item in zip(documents, metadata, strict=True)
+            ]
+
+        def serialize_results(results: list[SearchResult]) -> list[dict[str, Any]]:
+            return [
+                {"text": result.text, "metadata": result.metadata} for result in results
+            ]
+
+        return (
+            trace.capture("retrieval", retrieval_inputs, search, serialize_results)
+            if trace
+            else search()
+        )
 
     def ask(self, query: str) -> tuple[str, list[SearchResult]]:
-        results = self.retrieve(query)
-        context = "\n\n".join(
-            f"[{number}] {result.text}" for number, result in enumerate(results, start=1)
+        trace = PipelineTrace(self.settings.diagnostics_dir)
+        self.last_trace_path = trace.path
+        trace.record(
+            "query",
+            {
+                "query": query,
+                "collection": self.settings.collection,
+                "top_k": self.settings.top_k,
+                "embedding_model": self.settings.embedding_model,
+                "llm_model": self.settings.llm_model,
+            },
+            status="started",
         )
+        try:
+            results = self.retrieve(query, trace=trace)
 
-        load_environment()
-        from openai import OpenAI
+            def build_prompt() -> dict[str, str]:
+                context = "\n\n".join(
+                    f"[{number}] {result.text}"
+                    for number, result in enumerate(results, start=1)
+                )
+                return {
+                    "instructions": (
+                        "Answer the question using only the provided context. "
+                        "If the answer is not in the context, say you do not know."
+                    ),
+                    "input": f"Question:\n{query}\n\nContext:\n{context}",
+                }
 
-        response = OpenAI().responses.create(
-            model=self.settings.llm_model,
-            instructions=(
-                "Answer the question using only the provided context. "
-                "If the answer is not in the context, say you do not know."
-            ),
-            input=f"Question:\n{query}\n\nContext:\n{context}",
-        )
-        return response.output_text.strip(), results
+            prompt = trace.capture(
+                "prompt_construction",
+                {
+                    "query": query,
+                    "retrieved_results": [
+                        {"text": result.text, "metadata": result.metadata}
+                        for result in results
+                    ],
+                },
+                build_prompt,
+            )
+
+            load_environment()
+            from openai import OpenAI
+
+            response = trace.capture(
+                "generation",
+                {"model": self.settings.llm_model, **prompt},
+                lambda: OpenAI().responses.create(
+                    model=self.settings.llm_model,
+                    instructions=prompt["instructions"],
+                    input=prompt["input"],
+                ),
+                lambda item: {
+                    "response_id": getattr(item, "id", None),
+                    "output_text": item.output_text,
+                    "usage": getattr(item, "usage", None),
+                },
+            )
+            answer = response.output_text.strip()
+            trace.record(
+                "query",
+                {"query": query},
+                outputs={
+                    "answer": answer,
+                    "sources": [
+                        {"text": result.text, "metadata": result.metadata}
+                        for result in results
+                    ],
+                },
+            )
+            return answer, results
+        except Exception as error:
+            trace.record("query", {"query": query}, status="failed", error=error)
+            raise

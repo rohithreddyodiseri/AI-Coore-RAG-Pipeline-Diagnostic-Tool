@@ -1,4 +1,5 @@
 # Open RAGBench RAG Pipeline
+
 ## Code Milestone
 
 ## Project Overview
@@ -44,7 +45,6 @@ OPENAI_API_KEY=your_openai_api_key
 ```
 
 The application loads this file when running the indexing and question-answering commands. An OpenAI API key is required for answer generation, but not for local embedding or indexing.
-
 
 ## 3. Download the Dataset
 
@@ -129,25 +129,29 @@ After building the index, run:
 rag-pipeline ask "What methods are used to improve retrieval quality?"
 ```
 
-The application retrieves relevant chunks, sends them to the language model, and prints the answer followed by the retrieved source paper titles.
+The answer and the source paper titles are printed in the terminal.
 
-The model is instructed to answer using only the supplied context and to say it does not know when the context does not contain the answer. This is a prompt instruction, not a guarantee of answer accuracy.
+Every query also writes an append-only JSONL diagnostic trace under
+`data/diagnostics/`. The trace records the inputs, outputs, duration, and status
+of query embedding, retrieval, prompt construction, and model generation. The
+CLI prints the exact trace path, including when a traced stage fails. Use
+`--diagnostics-dir /path/to/logs` to choose another directory.
 
 ## Configuration
 
 Default settings:
 
-| Setting | Default |
-|---|---|
-| Embedding model | `sentence-transformers/all-MiniLM-L6-v2` |
-| Generation model | `gpt-4o-mini` |
-| Vector database | Persistent ChromaDB |
-| Similarity measure | Cosine distance |
-| Collection | `open_ragbench` |
-| Chunk size | 800 characters |
-| Chunk overlap | 120 characters |
-| Embedding batch size | 64 |
-| Retrieved chunks | 5 |
+| Setting              | Default                                  |
+| -------------------- | ---------------------------------------- |
+| Embedding model      | `sentence-transformers/all-MiniLM-L6-v2` |
+| Generation model     | `gpt-4o-mini`                            |
+| Vector database      | Persistent ChromaDB                      |
+| Similarity measure   | Cosine distance                          |
+| Collection           | `open_ragbench`                          |
+| Chunk size           | 800 characters                           |
+| Chunk overlap        | 120 characters                           |
+| Embedding batch size | 64                                       |
+| Retrieved chunks     | 5                                        |
 
 View available command-line options:
 
@@ -174,52 +178,90 @@ RAG_CHUNK_SIZE
 RAG_CHUNK_OVERLAP
 RAG_BATCH_SIZE
 RAG_TOP_K
+RAG_DIAGNOSTICS_DIR
 ```
 
-Use the same embedding model when indexing and asking questions. If the embedding model or chunking settings change, rebuild the index.
+The indexer accepts an iterable of `Document` objects, so another dataset can be
+used by writing a small loader without changing the retrieval or generation code.
 
-## Tests
+## Fault injection engine
 
-Run the included tests:
+The engine copies the clean Open RAGBench paper JSON corpus and applies the
+mutations in a YAML manifest. It needs no model calls, embeddings, or API keys.
+Install the updated dependencies with `pip install -e .`, then run:
 
 ```bash
-python -m pytest
+python -m rag_pipeline.fault_injector \
+  --manifest manifests/faults.example.yaml \
+  --output-dir data/fault_runs/example
 ```
 
-The repository includes three tests covering:
+The installed `fault-injector` command accepts the same arguments. Use
+`--corpus-dir` to select another downloaded Open RAGBench `corpus` directory.
+Its parent must contain the corresponding `queries.json`, `qrels.json`, and
+`answers.json`. Paths on the command line are relative to the working directory.
 
-- Loading abstracts, section text, and tables while excluding image data.
-- Limiting the number of loaded corpus files.
-- Generating stable chunk identifiers.
+The run produces:
 
-These tests do not measure retrieval accuracy or validate live model answers.
+```text
+data/fault_runs/example/
+  corpus/             # Corrupted paper JSON files; input for the indexer
+  ground_truth.json   # Query-keyed registry; keep outside the index
+```
 
-## Release notes
+To index this corpus with the existing pipeline:
 
-### Initial RAG Pipeline Submission
+```bash
+rag-pipeline index --corpus-dir data/fault_runs/example/corpus \
+  --chroma-dir data/chroma_faults --collection fault_example --reset
+```
 
-This release implements the basic command-line RAG workflow:
+The example manifest uses four real query IDs from the downloaded dataset.
+Each case specifies a `query_id`, `failure_type`, and optional `injection_config`.
+The query text and clean answer come from the dataset; `qrels.json` supplies the
+default document and section. Sections are selected by their `section_id`, which
+can differ from their position in the sections array.
 
-- Downloading the Open RAGBench dataset.
-- Loading abstracts, section text, and supported table content from JSON files.
-- Splitting text with `RecursiveCharacterTextSplitter`.
-- Creating local embeddings with `sentence-transformers/all-MiniLM-L6-v2`.
-- Storing embeddings, text, and metadata in ChromaDB.
-- Retrieving relevant chunks using vector similarity.
-- Generating answers through the OpenAI API.
-- Displaying retrieved source paper titles.
-- Configuring settings through command-line options and environment variables.
-- Providing basic automated tests.
+| Failure type        | Mutation                                      | Configuration options                          |
+| ------------------- | --------------------------------------------- | ---------------------------------------------- |
+| `missing_content`   | Delete the entire paper JSON file             | `target_file`                                  |
+| `missed_top_ranked` | Append noise to the selected field            | `noise`, `repeat` (default 500)                |
+| `not_extracted`     | Wrap the selected field in contradictory text | `prefix`, `suffix`                             |
+| `incomplete_answer` | Truncate the selected field                   | `keep_fraction` (default 0.5), or `keep_chars` |
 
-The implementation indexes the dataset’s JSON representations of papers. It does not parse raw PDFs or process images.
+For text mutations, `target_file` optionally overrides the paper filename and
+`section_id` overrides the relevant section. The default `field` is `text`;
+`field: table` also requires `table_id`, while `field: abstract` targets the
+paper abstract without a section ID. For example, a table mutation can use:
 
-Hybrid retrieval, reranking, controlled fault injection, stage-level diagnostic reports, and question-answer benchmark evaluation are not included in this release. Displayed source titles identify retrieved papers; the code does not verify that individual answer statements are supported by those sources.
+```yaml
+version: 1
+test_cases:
+  - query_id: "YOUR_QUERY_ID"
+    failure_type: incomplete_answer
+    injection_config:
+      section_id: 3
+      field: table
+      table_id: "YOUR_TABLE_KEY"
+      keep_chars: 120
+```
 
+The registry records each query and clean answer, original relevance target,
+failure category, intended failure stage, generated root cause, exact file and
+JSON pointer, injection configuration, and original/corrupted file SHA-256 hashes.
+Text edits include the removed and inserted text with zero-based, end-exclusive
+Unicode character offsets in the original selected field. A deleted document
+has a null corrupted hash. Section array positions are also recorded to match
+the existing loader's section metadata.
 
-## Additional Branches
+These labels describe intended downstream failures. The registry proves what
+was changed; noise or truncation does not guarantee a retrieval or generation
+failure, or removal of every occurrence of an answer. No diagnostic evaluation
+is performed by this engine.
 
-All code is in the `main` branch and its `origin/main` tracking reference.
-
-## Future Work
-
-Planned work includes recording intermediate pipeline outputs, creating controlled failures with known causes, evaluating retrieval and answer quality, and developing a tool that identifies likely failure stages with supporting evidence.
+The clean corpus stays untouched. Unknown options, missing queries/files/sections,
+duplicate query IDs, and multiple cases targeting the same paper are rejected.
+All cases are validated before output is staged. Each run requires a new output
+directory; regenerate into a different directory with the same manifest and
+clean input to get identical corpus content and registry bytes. To test another
+fault on the same document, create a separate manifest/run.
