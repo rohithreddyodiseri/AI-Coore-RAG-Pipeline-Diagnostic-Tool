@@ -8,25 +8,40 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
+from gemini_client import DEFAULT_MODEL
+
 
 @dataclass(frozen=True)
 class DiagnosticConfig:
-    # How much of a passage has to be found for it to count as present.
-    match_threshold: float = 0.9
-    # How far down the results to look for the answer chunk's real rank.
-    deep_k: int = 100
-    # Below this confidence, the tool abstains instead of giving a verdict.
-    abstain_below: float = 0.6
-    # Which judge to use: "reference_recall" (no model) or "llm".
-    judge: str = "reference_recall"
-    judge_threshold: float = 0.8
-    judge_model: str = "gpt-4o-mini"
+    deep_k: int = 20
+    abstain_below: float = 0.7
+    judge: str = "llm"
+    judge_model: str = DEFAULT_MODEL
+    judge_max_output_tokens: int = 6000
+    max_judge_input_chars: int = 100000
+    inspect_corpus: bool = True
+    corpus_budget_chars: int = 40000
     judge_cache: str = "runs/judge_cache.json"
-    # Share of cases held back for the final score, and the seed for picking them.
     held_out_fraction: float = 0.3
     split_seed: str = "fall-2026"
-    # Where run records are saved.
     runs_dir: str = "runs"
+
+    def __post_init__(self):
+        for key in ("abstain_below", "held_out_fraction"):
+            value = getattr(self, key)
+            if type(value) not in (int, float) or not 0 < value <= 1:
+                raise ValueError(f"{key} must be in (0, 1]")
+        for key in (
+            "deep_k",
+            "judge_max_output_tokens",
+            "max_judge_input_chars",
+            "corpus_budget_chars",
+        ):
+            value = getattr(self, key)
+            if type(value) is not int or value < 1:
+                raise ValueError(f"{key} must be a positive integer")
+        if type(self.inspect_corpus) is not bool:
+            raise ValueError("inspect_corpus must be boolean")
 
     @classmethod
     def from_file(cls, path: Path | None) -> DiagnosticConfig:

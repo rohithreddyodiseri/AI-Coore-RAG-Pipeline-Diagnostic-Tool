@@ -1,12 +1,12 @@
 {
-  "match_threshold": 0.9,
-  "deep_k": 100,
-  "abstain_below": 0.6,
-  "judge": "reference_recall",
-  "judge_threshold": 0.8,
-  "judge_model": "gpt-4o-mini",
+  "judge": "llm",
+  "judge_model": "gemini-2.5-flash-lite",
+  "abstain_below": 0.7,
+  "deep_k": 20,
+  "inspect_corpus": true,
+  "max_judge_input_chars": 100000,
+  "judge_max_output_tokens": 6000,
   "judge_cache": "runs/judge_cache.json",
-  "held_out_fraction": 0.3,
-  "split_seed": "fall-2026",
-  "runs_dir": "runs"
+  "runs_dir": "runs",
+  "corpus_budget_chars": 40000
 }

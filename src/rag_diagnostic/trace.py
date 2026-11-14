@@ -8,23 +8,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-# The stages in pipeline order. "corpus" isn't a real stage. It's the verdict
-# when the answer was never in the documents to begin with.
-STAGES: tuple[str, ...] = (
-    "corpus",
-    "parsing",
-    "chunking",
-    "indexing",
-    "retrieval",
-    "reranking",
-    "context",
-    "generation",
-)
-
-
-def stage_order(stage: str) -> int:
-    return STAGES.index(stage)
-
 
 @dataclass(frozen=True)
 class Chunk:

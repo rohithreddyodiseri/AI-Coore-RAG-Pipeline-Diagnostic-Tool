@@ -1,12 +1,4 @@
-"""Diagnose wrong RAG answers, or score the tool on labeled cases.
-
-    rag-diagnose diagnose --cases cases.jsonl --adapter rag_diagnostic.adapters.toy:build
-    rag-diagnose evaluate --cases cases.jsonl --labels labels.jsonl \\
-        --adapter rag_diagnostic.adapters.toy:build --split held_out
-
---adapter points to a function, written as "module:function". It takes a
-case's pipeline settings and returns an adapter.
-"""
+"""Run a query against a target RAG pipeline and attribute failures from its trace."""
 
 from __future__ import annotations
 
@@ -14,81 +6,85 @@ import argparse
 import importlib
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
-from rag_diagnostic.cases import load_cases, load_labels
 from rag_diagnostic.config import DiagnosticConfig
 from rag_diagnostic.diagnose import Diagnoser
-from rag_diagnostic.evaluate import evaluate, render_report, split_cases
-from rag_diagnostic.judge import build_judge
-from rag_diagnostic.runlog import append_jsonl
+
+DEFAULT_ADAPTER = "rag_diagnostic.adapters.open_ragbench:build"
 
 
-def _load_factory(spec: str):
-    module_name, _, function = spec.partition(":")
-    if not function:
+def _load_factory(spec):
+    module, separator, name = spec.partition(":")
+    if not separator or not module or not name:
         raise ValueError("--adapter must look like module.path:function")
-    return getattr(importlib.import_module(module_name), function)
+    return getattr(importlib.import_module(module), name)
 
 
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="rag-diagnose", description=__doc__.splitlines()[0])
-    commands = parser.add_subparsers(dest="command", required=True)
-
-    diagnose = commands.add_parser("diagnose", help="Diagnose failing queries")
-    diagnose.add_argument("--cases", type=Path, required=True)
-    diagnose.add_argument("--case-id", action="append", help="Only these cases (repeatable)")
-    diagnose.add_argument("--adapter", required=True)
-    diagnose.add_argument("--config", type=Path)
-    diagnose.add_argument("--json", action="store_true", help="Print full JSON verdicts")
-
-    evaluate_cmd = commands.add_parser("evaluate", help="Score the tool against labelled cases")
-    evaluate_cmd.add_argument("--cases", type=Path, required=True)
-    evaluate_cmd.add_argument("--labels", type=Path, required=True)
-    evaluate_cmd.add_argument("--adapter", required=True)
-    evaluate_cmd.add_argument("--config", type=Path)
-    evaluate_cmd.add_argument("--split", choices=["held_out", "tuning", "all"], default="held_out")
-    evaluate_cmd.add_argument("--report-out", type=Path)
+def _parser():
+    parser = argparse.ArgumentParser(prog="rag-diagnose", description=__doc__)
+    parser.add_argument("query", help="Query to execute on the connected RAG pipeline")
+    parser.add_argument(
+        "--adapter", default=DEFAULT_ADAPTER, help="Target adapter factory (module:function)"
+    )
+    parser.add_argument("--pipeline-config", type=Path, help="JSON settings for the target adapter")
+    parser.add_argument("--config", type=Path, help="Diagnostic settings JSON")
+    parser.add_argument("--corpus-dir", type=Path)
+    parser.add_argument("--chroma-dir", type=Path)
+    parser.add_argument("--collection")
+    parser.add_argument("--embedding-model")
+    parser.add_argument("--llm-model", help="Target pipeline generation model")
+    parser.add_argument("--top-k", type=int)
+    parser.add_argument("--judge-model", help="Diagnostic judge model")
+    parser.add_argument("--report-out", type=Path, help="Structured JSON report destination")
+    parser.add_argument(
+        "--trace-out", type=Path, help="Also save the captured target execution trace"
+    )
+    parser.add_argument("--json", action="store_true", help="Print the structured report")
     return parser
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv=None):
     args = _parser().parse_args(argv)
-    config = DiagnosticConfig.from_file(args.config)
-    diagnoser = Diagnoser(config, build_judge(config))
-    factory = _load_factory(args.adapter)
-    log_path = Path(config.runs_dir) / "diagnoses.jsonl"
-    cases = load_cases(args.cases)
-
-    def record(verdict):
-        append_jsonl(log_path, verdict.to_dict())
-
-    if args.command == "diagnose":
-        if args.case_id:
-            wanted = set(args.case_id)
-            cases = [c for c in cases if c.case_id in wanted]
-        for case in cases:
-            verdict = diagnoser.diagnose(case, factory(case.pipeline))
-            record(verdict)
-            if args.json:
-                print(json.dumps(verdict.to_dict(), indent=2, default=str))
-            else:
-                print(verdict.render(), end="\n\n")
-        print(f"Run records appended to {log_path}", file=sys.stderr)
-        return
-
-    tuning, held_out = split_cases(cases, config.held_out_fraction, config.split_seed)
-    chosen = {"held_out": held_out, "tuning": tuning, "all": cases}[args.split]
-    if not chosen:
-        raise SystemExit(f"the {args.split} split is empty; add cases or change held_out_fraction")
-    report = evaluate(chosen, load_labels(args.labels), factory, diagnoser, on_verdict=record)
-    report["split"] = args.split
-    report["config_fingerprint"] = config.fingerprint()
-    print(f"Split: {args.split} ({len(chosen)} of {len(cases)} cases)\n")
-    print(render_report(report))
-    if args.report_out:
-        args.report_out.parent.mkdir(parents=True, exist_ok=True)
-        args.report_out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    try:
+        config = DiagnosticConfig.from_file(args.config)
+        if args.judge_model:
+            config = replace(config, judge_model=args.judge_model)
+        settings = json.loads(args.pipeline_config.read_text()) if args.pipeline_config else {}
+        if not isinstance(settings, dict):
+            raise ValueError("--pipeline-config must contain a JSON object")
+        for name in (
+            "corpus_dir",
+            "chroma_dir",
+            "collection",
+            "embedding_model",
+            "llm_model",
+            "top_k",
+        ):
+            value = getattr(args, name)
+            if value is not None:
+                settings[name] = str(value) if isinstance(value, Path) else value
+        adapter = _load_factory(args.adapter)(settings)
+        verdict = Diagnoser(config).diagnose(args.query, adapter)
+        data = verdict.to_dict()
+        destination = (
+            args.report_out or Path(config.runs_dir) / "reports" / f"{verdict.run_id}.json"
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        if args.trace_out:
+            args.trace_out.parent.mkdir(parents=True, exist_ok=True)
+            args.trace_out.write_text(
+                json.dumps(verdict.observations["trace"], indent=2), encoding="utf-8"
+            )
+        print(json.dumps(data, indent=2) if args.json else verdict.render())
+        print(f"Diagnostic report: {destination}", file=sys.stderr)
+    except KeyboardInterrupt:
+        raise SystemExit(130) from None
+    except Exception as error:
+        print(f"Diagnostic error: {error}", file=sys.stderr)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

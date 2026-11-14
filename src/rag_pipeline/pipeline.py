@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from rag_pipeline.config import Settings, load_environment
+from gemini_client import GeminiInferenceEngine
+from rag_pipeline.config import Settings
 from rag_pipeline.corpus import Document
 from rag_pipeline.diagnostics import PipelineTrace
 
@@ -15,12 +16,22 @@ from rag_pipeline.diagnostics import PipelineTrace
 class SearchResult:
     text: str
     metadata: dict[str, Any]
+    chunk_id: str = ""
+    score: float | None = None
+    rank: int = 0
 
 
 class RAGPipeline:
-    def __init__(self, settings: Settings):
+    generation_instructions = (
+        "Answer the question using only the provided context. "
+        "If the answer is not in the context, say you do not know."
+    )
+    generation_temperature = 0.2
+
+    def __init__(self, settings: Settings, client=None):
         settings.validate()
         self.settings = settings
+        self._inference = GeminiInferenceEngine(settings.llm_model, client=client)
         self._embedder: Any = None
         self._collection: Any = None
         self.last_trace_path: Path | None = None
@@ -124,7 +135,10 @@ class RAGPipeline:
         save_batch()
         return indexed
 
-    def retrieve(self, query: str, trace: PipelineTrace | None = None) -> list[SearchResult]:
+    def search(self, query: str, k: int, trace: PipelineTrace | None = None) -> list[SearchResult]:
+        """The actual vector retrieval implementation, also used for inspection probes."""
+        if k < 1:
+            raise ValueError("retrieval k must be positive")
         collection = self._open_collection(create=False)
         item_count = collection.count()
         if item_count == 0:
@@ -161,6 +175,87 @@ class RAGPipeline:
                 SearchResult(text=str(text), metadata=dict(item or {}))
                 for text, item in zip(documents, metadata, strict=True)
             ]
+            raise RuntimeError("The index is empty. Run `rag-pipeline index` first.")
+        response = collection.query(
+            query_embeddings=self._embed([query]),
+            n_results=min(k, item_count),
+            include=["documents", "metadatas", "distances"],
+        )
+        ids = response["ids"][0]
+        documents = response["documents"][0]
+        metadata = response["metadatas"][0]
+        distances = response["distances"][0]
+        return [
+            SearchResult(str(text), dict(meta or {}), str(chunk_id), 1.0 - float(distance), rank)
+            for rank, (chunk_id, text, meta, distance) in enumerate(
+                zip(ids, documents, metadata, distances, strict=True), start=1
+            )
+        ]
+
+    def retrieve(self, query: str) -> list[SearchResult]:
+        return self.search(query, self.settings.top_k)
+
+    def assemble_context(self, query: str, results: list[SearchResult]) -> str:
+        return "\n\n".join(f"[{n}] {result.text}" for n, result in enumerate(results, start=1))
+
+    def generate(self, query: str, context: str) -> str:
+        return self._inference.generate(
+            prompt=f"Question:\n{query}\n\nContext:\n{context}",
+            system_instruction=self.generation_instructions,
+            temperature=self.generation_temperature,
+        )
+
+    def execute(self, query: str) -> tuple[str, list[SearchResult], dict[str, Any]]:
+        """Execute once and record the exact inputs/outputs of the real query stages."""
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("query must be a nonempty string")
+        results = self.retrieve(query)
+        retrieved = [
+            {
+                **asdict(result),
+                "doc_id": str(result.metadata.get("doc_id", "")),
+                "rank": result.rank or n,
+                "chunk_id": result.chunk_id or f"retrieval:{n}",
+            }
+            for n, result in enumerate(results, start=1)
+        ]
+        context = self.assemble_context(query, results)
+        prompt = f"Question:\n{query}\n\nContext:\n{context}"
+        answer = self.generate(query, context)
+        trace = {
+            "query": query,
+            "generation_instructions": self.generation_instructions,
+            "reranker_used": False,
+            "stages": {
+                "retrieval": {
+                    "input_data": {"query": query, "k": self.settings.top_k},
+                    "k": self.settings.top_k,
+                    "output_data": retrieved,
+                },
+                "reranking": {"status": "not_used"},
+                "context_assembly": {
+                    "input_data": retrieved,
+                    "output_data": {
+                        "chunk_ids": [r["chunk_id"] for r in retrieved],
+                        "text": context,
+                    },
+                },
+                "generation": {
+                    "input_data": {
+                        "prompt": prompt,
+                        "system_instruction": self.generation_instructions,
+                        "model": self.settings.llm_model,
+                        "temperature": self.generation_temperature,
+                    },
+                    "output_data": answer,
+                },
+            },
+            "final_answer": answer,
+        }
+        return answer, results, trace
+
+    def run_with_trace(self, query: str) -> dict[str, Any]:
+        return self.execute(query)[2]
 
         def serialize_results(results: list[SearchResult]) -> list[dict[str, Any]]:
             return [
@@ -248,3 +343,5 @@ class RAGPipeline:
         except Exception as error:
             trace.record("query", {"query": query}, status="failed", error=error)
             raise
+        answer, sources, _ = self.execute(query)
+        return answer, sources

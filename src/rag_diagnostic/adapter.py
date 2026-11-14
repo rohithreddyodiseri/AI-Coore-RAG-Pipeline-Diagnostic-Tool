@@ -1,89 +1,43 @@
-"""The interface a pipeline fills in so the tool can diagnose it.
+"""Documented boundary between the attribution engine and any target RAG system.
 
-To connect a new pipeline, subclass PipelineAdapter and fill in each method.
-The tool uses these methods to see what the pipeline did, and to rerun the
-later stages after fixing an earlier one.
+Implement this interface by calling or instrumenting the target's real execution.
+Do not reproduce its stage logic inside the adapter. See docs/diagnostic-tool.md.
 """
-
-from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Any
 
-from rag_diagnostic.trace import Chunk, Context, QueryTrace, ScoredChunk
+from rag_diagnostic.trace import QueryTrace, ScoredChunk
 
 
 class PipelineAdapter(ABC):
-    # How many chunks retrieval returns.
     retrieval_k: int = 5
-    # How many of the ranked chunks go into the context.
     context_k: int = 5
-    # Set this to False if the adapter can't read the original documents.
-    # Then a missing raw document means "unknown" instead of "doesn't exist".
-    provides_raw_text: bool = True
-
-    # ---- Documents and the index ----------------------------------------------
 
     @abstractmethod
     def describe(self) -> dict[str, Any]:
-        """The pipeline's settings. These are saved with every run."""
+        """Resolved non-secret settings, model/prompt identity and target code revision."""
 
     @abstractmethod
-    def raw_text(self, doc_id: str) -> str | None:
-        """The original document text before parsing, or None if it can't be found.
+    def run(self, query: str) -> dict[str, Any] | QueryTrace:
+        """Run the actual target once, returning exact stage inputs/outputs and response.
 
-        Without raw text, the tool can't tell whether the answer was lost in
-        parsing or was never there, so it abstains on those cases.
+        May instead return a captured execution of this query. Omit unobserved
+        stages and explicitly mark unused stages; never invent missing artifacts.
         """
 
     @abstractmethod
-    def parsed_text(self, doc_id: str) -> str | None:
-        """The document text after parsing, or None if it wasn't parsed."""
+    def corpus_snapshot(self) -> dict[str, Any]:
+        """Corpus documents, immutable snapshot_id, scope and truthful completeness.
 
-    @abstractmethod
-    def chunks(self, doc_id: str) -> list[Chunk]:
-        """The chunks made from one document, in order."""
+        Return {documents: [...], snapshot_id: ..., scope: ..., complete: bool}.
+        An inaccessible corpus must be explicit: documents=[], complete=False.
+        """
 
-    @abstractmethod
-    def indexed_ids(self, chunk_ids: list[str]) -> set[str]:
-        """Which of these chunks are in the index."""
-
-    # ---- Stages that run for each question -------------------------------------
-
-    @abstractmethod
     def retrieve(self, query: str, k: int) -> list[ScoredChunk]:
-        """The top k chunks for the question, best first."""
+        """Optional deeper inspection search, kept separate from the original execution."""
+        raise NotImplementedError("the target does not expose deeper retrieval")
 
-    def rerank(self, query: str, candidates: list[ScoredChunk]) -> list[ScoredChunk] | None:
-        """The candidates in a new order, or None if there's no reranker."""
+    def generation_instructions(self) -> str | None:
+        """Exact generation system instructions if not already in the trace."""
         return None
-
-    @abstractmethod
-    def assemble_context(self, query: str, ranked: list[ScoredChunk]) -> Context:
-        """Build the context the model will see."""
-
-    @abstractmethod
-    def generate(self, query: str, context: Context) -> str:
-        """Answer the question from the context. Use temperature 0 so results repeat."""
-
-    # ---- Full run ---------------------------------------------------------------
-
-    def run(self, query: str) -> QueryTrace:
-        """Run every stage in order and keep what each one produced.
-
-        Override this if your pipeline runs differently, for example if the
-        outputs come from saved logs.
-        """
-        candidates = self.retrieve(query, self.retrieval_k)
-        reranked = self.rerank(query, candidates)
-        ranked = reranked if reranked is not None else candidates
-        context = self.assemble_context(query, ranked)
-        answer = self.generate(query, context)
-        return QueryTrace(
-            query=query,
-            candidates=tuple(candidates),
-            ranked=tuple(ranked),
-            reranker_used=reranked is not None,
-            context=context,
-            answer=answer,
-        )

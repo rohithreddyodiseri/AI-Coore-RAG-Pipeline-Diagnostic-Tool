@@ -51,10 +51,30 @@ class CaseResult:
     status: str
     confidence: float
     correct: bool
+    true_categories: str | None = None
+    predicted_categories: str | None = None
 
 
 def _predicted(verdict: Verdict) -> frozenset[str]:
     return frozenset() if verdict.status == "no_failure" else frozenset(verdict.stages)
+
+
+def _case_result(verdict: Verdict, label: FaultLabel) -> CaseResult:
+    predicted = _predicted(verdict)
+    return CaseResult(
+        case_id=verdict.case_id,
+        fault_type=label.fault_type,
+        true_stages=_label_name(label.stages),
+        predicted_stages="abstained" if verdict.status == "abstained" else _label_name(predicted),
+        suspects=_label_name(verdict.suspects),
+        status=verdict.status,
+        confidence=verdict.confidence,
+        correct=verdict.status != "abstained"
+        and predicted == label.stages
+        and (label.categories is None or frozenset(verdict.failure_categories) == label.categories),
+        true_categories=_label_name(label.categories) if label.categories is not None else None,
+        predicted_categories=_label_name(verdict.failure_categories),
+    )
 
 
 def evaluate(
@@ -64,29 +84,30 @@ def evaluate(
     diagnoser: Diagnoser,
     on_verdict: Callable[[Verdict], None] | None = None,
 ) -> dict[str, Any]:
-    results: list[CaseResult] = []
+    results = []
     for case in cases:
-        label = labels.get(case.case_id)
-        if label is None:
+        if case.case_id not in labels:
             raise KeyError(f"no label for case {case.case_id}")
         verdict = diagnoser.diagnose(case, adapter_factory(case.pipeline))
         if on_verdict:
             on_verdict(verdict)
-        predicted = _predicted(verdict)
-        results.append(
-            CaseResult(
-                case_id=case.case_id,
-                fault_type=label.fault_type,
-                true_stages=_label_name(label.stages),
-                predicted_stages="abstained"
-                if verdict.status == "abstained"
-                else _label_name(predicted),
-                suspects=_label_name(verdict.suspects),
-                status=verdict.status,
-                confidence=verdict.confidence,
-                correct=verdict.status != "abstained" and predicted == label.stages,
-            )
-        )
+        results.append(_case_result(verdict, labels[case.case_id]))
+    return summarize(results)
+
+
+def evaluate_traces(traces, labels, engine):
+    """Evaluate captured traces; labels never enter the engine or judge payload."""
+    results = []
+    seen = set()
+    for trace in traces:
+        case_id = trace.get("case_id")
+        if not isinstance(case_id, str) or case_id in seen:
+            raise ValueError("evaluation traces require unique string case_id values")
+        seen.add(case_id)
+        if case_id not in labels:
+            raise KeyError(f"no label for case {case_id}")
+        verdict = engine.diagnose(trace, case_id)
+        results.append(_case_result(verdict, labels[case_id]))
     return summarize(results)
 
 

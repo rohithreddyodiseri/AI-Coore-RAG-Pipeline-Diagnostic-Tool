@@ -6,7 +6,7 @@
 
 This project is a command-line retrieval-augmented generation (RAG) application that answers questions using documents from Open RAGBench.
 
-The application loads document text, splits it into smaller chunks, creates embeddings, and stores them in ChromaDB. When a user asks a question, it retrieves relevant chunks and sends them to `gpt-5.6 Sol` to generate an answer. The answer and retrieved source paper titles appear in the terminal.
+The application loads document text, splits it into smaller chunks, creates embeddings, and stores them in ChromaDB. When a user asks a question, it retrieves relevant chunks and sends them to `gemini-2.5-flash-lite` to generate an answer. The answer and retrieved source paper titles appear in the terminal.
 
 This pipeline is the starting point for a larger project focused on diagnosing RAG failures.
 
@@ -14,7 +14,7 @@ This pipeline is the starting point for a larger project focused on diagnosing R
 
 - Python 3.11 is recommended. The project supports Python 3.10–3.13.
 - Internet access for downloading the dataset and embedding model.
-- An OpenAI API key with API access for generating answers.
+- A Gemini API key with API access for generating answers.
 - A Hugging Face read token is optional for authenticated downloads.
 
 ## 1. Set Up the Environment
@@ -41,10 +41,10 @@ source .venv/bin/activate
 Create a file named `.env` in the project root and add:
 
 ```dotenv
-OPENAI_API_KEY=your_openai_api_key
+GEMINI_API_KEY=your_gemini_api_key
 ```
 
-The application loads this file when running the indexing and question-answering commands. An OpenAI API key is required for answer generation, but not for local embedding or indexing.
+The application loads this file when running the indexing and question-answering commands. A Gemini API key is required for answer generation, but not for local embedding or indexing.
 
 ## 3. Download the Dataset
 
@@ -144,7 +144,7 @@ Default settings:
 | Setting              | Default                                  |
 | -------------------- | ---------------------------------------- |
 | Embedding model      | `sentence-transformers/all-MiniLM-L6-v2` |
-| Generation model     | `gpt-4o-mini`                            |
+| Generation model     | `gemini-2.5-flash-lite`                  |
 | Vector database      | Persistent ChromaDB                      |
 | Similarity measure   | Cosine distance                          |
 | Collection           | `open_ragbench`                          |
@@ -265,3 +265,64 @@ All cases are validated before output is staged. Each run requires a new output
 directory; regenerate into a different directory with the same manifest and
 clean input to get identical corpus content and registry bytes. To test another
 fault on the same document, create a separate manifest/run.
+
+python -m pytest
+
+````
+
+The repository includes three tests covering:
+
+- Loading abstracts, section text, and tables while excluding image data.
+- Limiting the number of loaded corpus files.
+- Generating stable chunk identifiers.
+
+These tests do not measure retrieval accuracy or validate live model answers.
+
+## Release notes
+
+### Initial RAG Pipeline Submission
+
+This release implements the basic command-line RAG workflow:
+
+- Downloading the Open RAGBench dataset.
+- Loading abstracts, section text, and supported table content from JSON files.
+- Splitting text with `RecursiveCharacterTextSplitter`.
+- Creating local embeddings with `sentence-transformers/all-MiniLM-L6-v2`.
+- Storing embeddings, text, and metadata in ChromaDB.
+- Retrieving relevant chunks using vector similarity.
+- Generating answers through the Gemini API.
+- Displaying retrieved source paper titles.
+- Configuring settings through command-line options and environment variables.
+- Providing basic automated tests.
+
+The implementation indexes the dataset’s JSON representations of papers. It does not parse raw PDFs or process images.
+
+The base RAG pipeline does not include hybrid retrieval or reranking. The separate diagnostic package provides adapters, fault fixtures, stage reports, and evaluation. Displayed source titles identify retrieved papers; the code does not verify that individual answer statements are supported by those sources.
+
+
+## Additional Branches
+
+All code is in the `main` branch and its `origin/main` tracking reference.
+
+## Diagnostic tool
+
+The diagnostic tool connects directly to this project's RAG pipeline. It runs a
+query, captures the actual retrieval, context, prompt and generation artifacts,
+ingests the source corpus, and returns an evidence-cited stage attribution using
+the FP1–FP7 LLM evaluation matrix. It abstains when evidence is insufficient.
+
+With the corpus downloaded, index built, and `GEMINI_API_KEY` configured:
+
+```bash
+source .venv/bin/activate
+python -m pip install -e '.[dev]'
+rag-diagnose "What methods improve retrieval quality?" \
+  --config configs/diagnostic.json --report-out runs/report.json
+````
+
+Add `--json` for structured terminal output or `--trace-out runs/trace.json` to
+save the original execution separately. The default adapter uses the same
+execution functions as `rag-pipeline ask`. Engineers can implement the documented
+adapter interface to connect another RAG system.
+
+See [the run instructions and connection interface](docs/diagnostic-tool.md).

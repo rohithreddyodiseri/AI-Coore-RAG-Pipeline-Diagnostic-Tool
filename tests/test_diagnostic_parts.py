@@ -1,107 +1,201 @@
 import json
-from pathlib import Path
+from copy import deepcopy
 
 import pytest
+from conftest import FACT, FakeClient, report
 
-from rag_diagnostic.adapters.toy import build
-from rag_diagnostic.cases import DiagnosticCase, load_cases, load_labels
+from rag_diagnostic.cases import DiagnosticCase, load_labels
 from rag_diagnostic.config import DiagnosticConfig
-from rag_diagnostic.diagnose import Diagnoser
+from rag_diagnostic.diagnostic_engine import trace_artifacts
 from rag_diagnostic.evaluate import evaluate, render_report, split_cases
-from rag_diagnostic.judge import LLMJudge, ReferenceRecallJudge
-from rag_diagnostic.locate import coverage, locate_in_chunks
-from rag_diagnostic.trace import Chunk
-
-EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+from rag_diagnostic.judge import LLMJudge, build_judge
+from rag_diagnostic.trace import Context, QueryTrace, ScoredChunk
 
 
-def test_coverage_ignores_case_whitespace_and_punctuation():
-    assert coverage("THE mirror is 2.4   meters, wide!", "the mirror is 2.4 meters wide") == 1.0
-    assert coverage("nothing related here", "the mirror is 2.4 meters wide") == 0.0
-    assert coverage(None, "anything") == 0.0
+def test_default_is_llm_as_judge(tmp_path):
+    config = DiagnosticConfig(judge_cache=str(tmp_path / "cache.json"))
+    assert isinstance(build_judge(config), LLMJudge)
 
 
-def test_locate_detects_split_evidence():
-    chunks = [
-        Chunk("a", "d", "Port Velra. The Velra lighthouse was built"),
-        Chunk("b", "d", "in 1874 by the engineer Mara Quill."),
-    ]
-    match = locate_in_chunks(
-        chunks, "The Velra lighthouse was built in 1874 by the engineer Mara Quill."
-    )
-    assert match.split(0.9)
-    assert match.contributing_ids == ("a", "b")
+def test_query_only_cases():
+    assert DiagnosticCase.from_dict({"case_id": "a", "query": "Why?"}).pipeline == {}
 
 
-def test_cases_refuse_label_fields():
+@pytest.mark.parametrize(
+    "key", ["reference_answer", "gold", "stages", "fault_type", "failure_categories"]
+)
+def test_case_refuses_oracles_and_labels(key):
     with pytest.raises(ValueError):
-        DiagnosticCase.from_dict(
-            {
-                "case_id": "x",
-                "query": "q",
-                "reference_answer": "r",
-                "gold": [],
-                "stages": ["parsing"],
-            }
-        )
+        DiagnosticCase.from_dict({"case_id": "a", "query": "Why?", key: []})
 
 
-def test_split_is_deterministic_and_stable():
-    cases = load_cases(EXAMPLES / "toy_cases.jsonl")
+@pytest.mark.parametrize("key", ["reference_answer", "gold", "expected_answer", "fault_type"])
+def test_nested_trace_oracles_are_rejected(trace, key):
+    trace["metadata"] = {key: "leaked benchmark answer"}
+    with pytest.raises(ValueError, match="reference answers"):
+        trace_artifacts(trace)
+
+
+def test_native_trace_and_standard_trace_preserve_observed_text(trace):
+    chunk = ScoredChunk("d:0", "d", FACT, 0.9, 1)
+    native = QueryTrace(
+        trace["query"], (chunk,), (chunk,), True, Context(("d:0",), FACT), trace["final_answer"]
+    )
+    artifacts = trace_artifacts(native.to_dict())
+    assert artifacts["context.text"]["text"] == FACT
+    assert artifacts["retrieval.chunk.0"]["text"] == FACT
+    assert artifacts["generation.answer"]["text"] == trace["final_answer"]
+
+
+def test_missing_and_empty_are_distinct(trace):
+    missing = deepcopy(trace)
+    missing["stages"].pop("retrieval")
+    empty = deepcopy(trace)
+    empty["stages"]["retrieval"]["output_data"] = []
+    assert "retrieval.manifest" not in trace_artifacts(missing)
+    assert trace_artifacts(empty)["retrieval.manifest"]["count"] == 0
+
+
+@pytest.mark.parametrize(
+    "change", ["missing_scope", "missing_snapshot", "duplicate_ids", "not_bool"]
+)
+def test_complete_corpus_contract(trace, change):
+    trace["corpus"] = {"documents": [], "complete": True, "scope": "test KB", "snapshot_id": "v1"}
+    if change == "missing_scope":
+        trace["corpus"].pop("scope")
+    elif change == "missing_snapshot":
+        trace["corpus"].pop("snapshot_id")
+    elif change == "not_bool":
+        trace["corpus"]["complete"] = "true"
+    else:
+        trace["corpus"]["documents"] = [{"doc_id": "d", "text": "text"}] * 2
+    with pytest.raises(ValueError):
+        trace_artifacts(trace)
+
+
+def test_split_is_deterministic():
+    cases = [DiagnosticCase(str(i), f"Query {i}") for i in range(20)]
     first = split_cases(cases, 0.3, "seed")
     second = split_cases(list(reversed(cases)), 0.3, "seed")
     assert {c.case_id for c in first[1]} == {c.case_id for c in second[1]}
-    assert len(first[0]) + len(first[1]) == len(cases)
 
 
-def test_evaluation_reports_accuracy_and_abstentions():
-    cases = load_cases(EXAMPLES / "toy_cases.jsonl")
-    labels = load_labels(EXAMPLES / "toy_labels.jsonl")
-    report = evaluate(cases, labels, build, Diagnoser(DiagnosticConfig(), ReferenceRecallJudge()))
-    assert report["cases"] == 13
-    assert report["abstained"] == 2
-    assert report["accuracy_when_answered"] == 1.0
-    assert {r["case_id"] for r in report["wrong_cases"]} == {"toy-11", "toy-13"}
-    assert "| Fault type |" in render_report(report)
+def test_evaluation_scores_category_and_stage(make_engine, trace, tmp_path):
+    from rag_diagnostic.cases import FaultLabel
+
+    engine, _ = make_engine(report(trace, [("FP5", "generation", ["query", "generation.answer"])]))
+
+    class FixedDiagnoser:
+        def diagnose(self, case, adapter):
+            return engine.diagnose(trace, case.case_id)
+
+    cases = [DiagnosticCase("format", trace["query"])]
+    labels = {
+        "format": FaultLabel(
+            "format", frozenset({"generation"}), "wrong_format", frozenset({"FP5"})
+        )
+    }
+    scored = evaluate(cases, labels, lambda settings: None, FixedDiagnoser())
+    assert scored["accuracy_overall"] == 1
+    labels["format"] = FaultLabel(
+        "format", frozenset({"generation"}), "wrong_label", frozenset({"FP7"})
+    )
+    scored = evaluate(cases, labels, lambda settings: None, FixedDiagnoser())
+    assert scored["accuracy_overall"] == 0
+    assert scored["wrong_cases"][0]["true_categories"] == "FP7"
+    assert "| Fault type |" in render_report(scored)
 
 
-def test_reference_recall_judge():
-    judge = ReferenceRecallJudge(0.8)
-    assert judge.judge("q", "It was built by Mara Quill.", "Mara Quill").correct
-    assert not judge.judge("q", "I do not know.", "Mara Quill").correct
+def test_label_categories_are_optional(tmp_path):
+    path = tmp_path / "labels.jsonl"
+    path.write_text('{"case_id":"a","stages":[],"failure_categories":[]}\n')
+    assert load_labels(path)["a"].categories == frozenset()
 
 
-class _FakeResponses:
-    def __init__(self):
-        self.calls = 0
-
-    def create(self, **kwargs):
-        self.calls += 1
-        assert kwargs["temperature"] == 0
-
-        class Out:
-            output_text = json.dumps({"correct": True, "reason": "same fact"})
-
-        return Out()
-
-
-class _FakeClient:
-    def __init__(self):
-        self.responses = _FakeResponses()
+def test_cache_identity_includes_model_prompt_and_schema(tmp_path, trace):
+    cache = tmp_path / "judge.json"
+    client = FakeClient(report(trace))
+    first = LLMJudge("pinned-v1", cache, client)
+    first.evaluate_trace({"trace": trace})
+    first.evaluate_trace({"trace": trace})
+    assert client.calls == 1
+    second = LLMJudge("pinned-v2", cache, client)
+    second.evaluate_trace({"trace": trace})
+    assert client.calls == 2
+    second.VERSION += 1
+    second.evaluate_trace({"trace": trace})
+    assert client.calls == 3
 
 
-def test_llm_judge_caches_verdicts(tmp_path):
-    client = _FakeClient()
-    judge = LLMJudge("some-model", tmp_path / "cache.json", client=client)
-    assert judge.judge("q", "a", "r").correct
-    assert judge.judge("q", "a", "r").correct
-    assert client.responses.calls == 1
-    reloaded = LLMJudge("some-model", tmp_path / "cache.json", client=_FakeClient())
-    assert reloaded.judge("q", "a", "r").correct
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"deep_k": 0},
+        {"abstain_below": 1.1},
+        {"deep_k": 1.2},
+        {"inspect_corpus": "yes"},
+        {"judge_max_output_tokens": 0},
+        {"max_judge_input_chars": True},
+    ],
+)
+def test_invalid_config(settings):
+    with pytest.raises(ValueError):
+        DiagnosticConfig(**settings)
 
 
-def test_config_rejects_unknown_keys(tmp_path):
+def test_removed_matching_config_is_rejected(tmp_path):
     path = tmp_path / "c.json"
-    path.write_text(json.dumps({"match_threshhold": 0.5}))
+    path.write_text('{"match_threshold":0.5}')
     with pytest.raises(ValueError):
         DiagnosticConfig.from_file(path)
+
+
+def test_trace_evaluation_does_not_send_labels_to_judge(make_engine, trace):
+    from rag_diagnostic.cases import FaultLabel
+    from rag_diagnostic.evaluate import evaluate_traces
+
+    trace["case_id"] = "case-1"
+    engine, client = make_engine(
+        report(trace, [("FP5", "generation", ["query", "generation.answer"])])
+    )
+    labels = {
+        "case-1": FaultLabel(
+            "case-1", frozenset({"generation"}), "SECRET_LABEL", frozenset({"FP5"})
+        )
+    }
+    scored = evaluate_traces([trace], labels, engine)
+    assert scored["accuracy_overall"] == 1
+    assert "SECRET_LABEL" not in client.requests[0]["contents"]
+
+
+def test_duplicate_trace_ids_are_rejected(make_engine, trace):
+    from rag_diagnostic.cases import FaultLabel
+    from rag_diagnostic.evaluate import evaluate_traces
+
+    trace["case_id"] = "case-1"
+    engine, _ = make_engine(report(trace))
+    with pytest.raises(ValueError, match="unique"):
+        evaluate_traces(
+            [trace, trace], {"case-1": FaultLabel("case-1", frozenset(), "none")}, engine
+        )
+
+
+def test_unknown_category_labels_are_rejected():
+    from rag_diagnostic.cases import FaultLabel
+
+    with pytest.raises(ValueError):
+        FaultLabel.from_dict(
+            {"case_id": "a", "stages": ["generation"], "failure_categories": ["FP8"]}
+        )
+
+
+def test_original_pipeline_settings_are_recorded(make_engine, trace):
+    trace["pipeline"] = {
+        "name": "external",
+        "revision": "external-commit",
+        "settings": {"top_k": 1},
+    }
+    engine, client = make_engine(report(trace))
+    verdict = engine.diagnose(trace)
+    assert verdict.run.pipeline == trace["pipeline"]
+    assert json.loads(client.requests[0]["contents"])["pipeline"] == trace["pipeline"]
