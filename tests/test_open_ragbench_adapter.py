@@ -20,7 +20,6 @@ rag_pipeline_mod = pytest.importorskip("rag_pipeline.pipeline")
 rag_corpus = pytest.importorskip("rag_pipeline.corpus")
 
 from rag_diagnostic.adapters.open_ragbench import OpenRAGBenchAdapter  # noqa: E402
-from rag_diagnostic.cases import DiagnosticCase  # noqa: E402
 from rag_diagnostic.config import DiagnosticConfig  # noqa: E402
 from rag_diagnostic.diagnose import Diagnoser  # noqa: E402
 from rag_diagnostic.judge import LLMJudge  # noqa: E402
@@ -76,10 +75,7 @@ PAPERS = [
     },
 ]
 
-CASE = DiagnosticCase(
-    case_id="orb-1",
-    query="What accuracy does the sparse probe reach on the held out split?",
-)
+QUERY = "What accuracy does the sparse probe reach on the held out split?"
 
 
 @pytest.fixture
@@ -140,7 +136,7 @@ def test_real_pipeline_artifacts_reach_llm_without_gold(tmp_path, corpus):
         return result
 
     adapter = make_adapter(tmp_path, corpus)
-    verdict = diagnoser(tmp_path, reply).diagnose(CASE, adapter)
+    verdict = diagnoser(tmp_path, reply).diagnose(QUERY, adapter)
     assert verdict.status == "no_failure", verdict.render()
     assert "generation.instructions" in observed[0]
     assert "deep.manifest" in observed[0]
@@ -167,8 +163,8 @@ def test_ask_and_diagnostic_capture_execute_same_real_pipeline(tmp_path, corpus)
         return original(query, context)
 
     adapter.pipeline.generate = generate
-    answer, sources = adapter.pipeline.ask(CASE.query)
-    trace = adapter.run(CASE.query)
+    answer, sources = adapter.pipeline.ask(QUERY)
+    trace = adapter.run(QUERY)
     assert trace["final_answer"] == answer
     assert len(calls) == 2
     assert calls[0] == calls[1]
@@ -219,16 +215,16 @@ def test_direct_query_cli_executes_target_once_and_writes_report(
     monkeypatch.setattr(cli, "_load_factory", factory)
     monkeypatch.setattr(cli, "Diagnoser", lambda settings: connected)
     output, captured = tmp_path / "report.json", tmp_path / "trace.json"
-    cli.main([CASE.query, "--report-out", str(output), "--trace-out", str(captured), "--json"])
+    cli.main([QUERY, "--report-out", str(output), "--trace-out", str(captured), "--json"])
     data = json.loads(capsys.readouterr().out)
     assert factories == [cli.DEFAULT_ADAPTER]
-    assert generated == [CASE.query]
-    assert data["query"] == CASE.query
+    assert generated == [QUERY]
+    assert data["query"] == QUERY
     assert data["run_id"] and "case_id" not in data
     assert json.loads(output.read_text())["answer"] == data["answer"]
     trace = json.loads(captured.read_text())
     assert len(trace["corpus"]["documents"]) == 2
     assert trace["corpus"]["complete"] is True
-    assert trace["stages"]["retrieval"]["input_data"]["query"] == CASE.query
+    assert trace["stages"]["retrieval"]["input_data"]["query"] == QUERY
     assert trace["stages"]["generation"]["output_data"] == data["answer"]
     assert (Path(config.runs_dir) / "diagnoses.jsonl").exists()

@@ -1,7 +1,7 @@
-"""Scores the tool against labeled cases.
+"""Scores the tool against labeled executions.
 
 A verdict is correct when it names exactly the labeled stages. The report
-shows three numbers: accuracy on the cases it answered, how often it
+shows three numbers: accuracy on the executions it answered, how often it
 abstained, and accuracy with abstentions counted as wrong. You need all
 three, since a tool can look accurate just by abstaining a lot.
 """
@@ -10,30 +10,26 @@ from __future__ import annotations
 
 import hashlib
 from collections import Counter, defaultdict
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from rag_diagnostic.adapter import PipelineAdapter
-from rag_diagnostic.cases import DiagnosticCase, FaultLabel
-from rag_diagnostic.diagnose import Diagnoser, Verdict
-
-AdapterFactory = Callable[[dict[str, Any]], PipelineAdapter]
+from rag_diagnostic.diagnostic_engine import Verdict
+from rag_diagnostic.labels import ExecutionLabel
 
 
-def split_cases(
-    cases: list[DiagnosticCase], held_out_fraction: float, seed: str
-) -> tuple[list[DiagnosticCase], list[DiagnosticCase]]:
-    """Split the cases into a tuning set and a held-out set.
+def split_executions(
+    executions: list[dict], held_out_fraction: float, seed: str
+) -> tuple[list[dict], list[dict]]:
+    """Split the executions into a tuning set and a held-out set.
 
-    Each case always lands on the same side, even as new cases are added,
-    so held-out cases never end up in tuning.
+    Each execution always lands on the same side, even as new executions are added,
+    so held-out executions never end up in tuning.
     """
     tuning, held_out = [], []
-    for case in cases:
-        digest = hashlib.sha256(f"{seed}\0{case.case_id}".encode()).hexdigest()
+    for execution in executions:
+        digest = hashlib.sha256(f"{seed}\0{execution['run_id']}".encode()).hexdigest()
         bucket = int(digest[:8], 16) / 0xFFFFFFFF
-        (held_out if bucket < held_out_fraction else tuning).append(case)
+        (held_out if bucket < held_out_fraction else tuning).append(execution)
     return tuning, held_out
 
 
@@ -42,8 +38,8 @@ def _label_name(stages) -> str:
 
 
 @dataclass
-class CaseResult:
-    case_id: str
+class ExecutionResult:
+    run_id: str
     fault_type: str
     true_stages: str
     predicted_stages: str
@@ -59,10 +55,10 @@ def _predicted(verdict: Verdict) -> frozenset[str]:
     return frozenset() if verdict.status == "no_failure" else frozenset(verdict.stages)
 
 
-def _case_result(verdict: Verdict, label: FaultLabel) -> CaseResult:
+def _execution_result(verdict: Verdict, label: ExecutionLabel) -> ExecutionResult:
     predicted = _predicted(verdict)
-    return CaseResult(
-        case_id=verdict.case_id,
+    return ExecutionResult(
+        run_id=verdict.run_id,
         fault_type=label.fault_type,
         true_stages=_label_name(label.stages),
         predicted_stages="abstained" if verdict.status == "abstained" else _label_name(predicted),
@@ -77,53 +73,35 @@ def _case_result(verdict: Verdict, label: FaultLabel) -> CaseResult:
     )
 
 
-def evaluate(
-    cases: list[DiagnosticCase],
-    labels: dict[str, FaultLabel],
-    adapter_factory: AdapterFactory,
-    diagnoser: Diagnoser,
-    on_verdict: Callable[[Verdict], None] | None = None,
-) -> dict[str, Any]:
-    results = []
-    for case in cases:
-        if case.case_id not in labels:
-            raise KeyError(f"no label for case {case.case_id}")
-        verdict = diagnoser.diagnose(case, adapter_factory(case.pipeline))
-        if on_verdict:
-            on_verdict(verdict)
-        results.append(_case_result(verdict, labels[case.case_id]))
-    return summarize(results)
-
-
 def evaluate_traces(traces, labels, engine):
     """Evaluate captured traces; labels never enter the engine or judge payload."""
     results = []
     seen = set()
     for trace in traces:
-        case_id = trace.get("case_id")
-        if not isinstance(case_id, str) or case_id in seen:
-            raise ValueError("evaluation traces require unique string case_id values")
-        seen.add(case_id)
-        if case_id not in labels:
-            raise KeyError(f"no label for case {case_id}")
-        verdict = engine.diagnose(trace, case_id)
-        results.append(_case_result(verdict, labels[case_id]))
+        run_id = trace.get("run_id")
+        if not isinstance(run_id, str) or run_id in seen:
+            raise ValueError("evaluation traces require unique string run_id values")
+        seen.add(run_id)
+        if run_id not in labels:
+            raise KeyError(f"no label for execution {run_id}")
+        verdict = engine.diagnose(trace, run_id)
+        results.append(_execution_result(verdict, labels[run_id]))
     return summarize(results)
 
 
-def summarize(results: list[CaseResult]) -> dict[str, Any]:
+def summarize(results: list[ExecutionResult]) -> dict[str, Any]:
     total = len(results)
     answered = [r for r in results if r.status != "abstained"]
     correct = sum(r.correct for r in results)
 
     per_type: dict[str, dict[str, Any]] = {}
-    grouped: dict[str, list[CaseResult]] = defaultdict(list)
+    grouped: dict[str, list[ExecutionResult]] = defaultdict(list)
     for r in results:
         grouped[r.fault_type].append(r)
     for fault_type, rows in sorted(grouped.items()):
         rows_answered = [r for r in rows if r.status != "abstained"]
         per_type[fault_type] = {
-            "cases": len(rows),
+            "executions": len(rows),
             "abstained": len(rows) - len(rows_answered),
             "accuracy_when_answered": _ratio(
                 sum(r.correct for r in rows_answered), len(rows_answered)
@@ -133,7 +111,7 @@ def summarize(results: list[CaseResult]) -> dict[str, Any]:
 
     confusion = Counter((r.true_stages, r.predicted_stages) for r in results)
     return {
-        "cases": total,
+        "executions": total,
         "answered": len(answered),
         "abstained": total - len(answered),
         "abstention_rate": _ratio(total - len(answered), total),
@@ -143,7 +121,7 @@ def summarize(results: list[CaseResult]) -> dict[str, Any]:
         "confusion": [
             {"true": t, "predicted": p, "count": n} for (t, p), n in sorted(confusion.items())
         ],
-        "wrong_cases": [vars(r) for r in results if not r.correct],
+        "incorrect_runs": [vars(r) for r in results if not r.correct],
     }
 
 
@@ -156,27 +134,27 @@ def render_report(report: dict[str, Any]) -> str:
         return "n/a" if value is None else f"{value:.1%}"
 
     lines = [
-        f"Cases: {report['cases']}   answered: {report['answered']}   "
+        f"Executions: {report['executions']}   answered: {report['answered']}   "
         f"abstained: {report['abstained']} ({pct(report['abstention_rate'])})",
         f"Accuracy when answered: {pct(report['accuracy_when_answered'])}",
         f"Accuracy with abstentions counted wrong: {pct(report['accuracy_overall'])}",
         "",
-        "| Fault type | Cases | Abstained | Accuracy (answered) | Accuracy (overall) |",
+        "| Fault type | Executions | Abstained | Accuracy (answered) | Accuracy (overall) |",
         "|---|---|---|---|---|",
     ]
     for name, row in report["per_fault_type"].items():
         lines.append(
-            f"| {name} | {row['cases']} | {row['abstained']} | "
+            f"| {name} | {row['executions']} | {row['abstained']} | "
             f"{pct(row['accuracy_when_answered'])} | {pct(row['accuracy_overall'])} |"
         )
     lines += ["", "| True stages | Predicted | Count |", "|---|---|---|"]
     lines += [f"| {c['true']} | {c['predicted']} | {c['count']} |" for c in report["confusion"]]
-    if report["wrong_cases"]:
-        lines += ["", "Cases the tool got wrong or abstained on:"]
+    if report["incorrect_runs"]:
+        lines += ["", "Executions the tool got wrong or abstained on:"]
         lines += [
-            f"  - {r['case_id']} ({r['fault_type']}): true {r['true_stages']}, "
+            f"  - {r['run_id']} ({r['fault_type']}): true {r['true_stages']}, "
             f"predicted {r['predicted_stages']}, suspects {r['suspects']}, "
             f"confidence {r['confidence']:.2f}"
-            for r in report["wrong_cases"]
+            for r in report["incorrect_runs"]
         ]
     return "\n".join(lines)

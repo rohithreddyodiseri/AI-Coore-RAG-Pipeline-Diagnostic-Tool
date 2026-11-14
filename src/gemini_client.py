@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-DEFAULT_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
 _PACING_LOCK = threading.Lock()
 _LAST_REQUEST: float | None = None
 

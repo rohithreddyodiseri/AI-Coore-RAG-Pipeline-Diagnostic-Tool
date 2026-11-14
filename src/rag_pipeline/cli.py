@@ -27,6 +27,7 @@ def _parser(defaults: Settings) -> argparse.ArgumentParser:
 
     ask = commands.add_parser("ask", help="Ask a question")
     ask.add_argument("query")
+    ask.add_argument("--failure-reason", help="Flag this captured run for diagnostic ingestion")
     ask.add_argument("--chroma-dir", type=Path, default=defaults.chroma_dir)
     ask.add_argument("--collection", default=defaults.collection)
     ask.add_argument("--embedding-model", default=defaults.embedding_model)
@@ -79,7 +80,7 @@ def main(argv: list[str] | None = None) -> None:
             diagnostics_dir=args.diagnostics_dir.expanduser().resolve(),
         )
         pipeline = RAGPipeline(settings)
-        answer, sources = pipeline.ask(args.query)
+        answer, sources = pipeline.ask(args.query, failure_reason=args.failure_reason)
         print(f"\n{answer}\n\nSources:")
         titles = dict.fromkeys(source.metadata.get("title", "Untitled") for source in sources)
         for number, title in enumerate(titles, start=1):

@@ -30,11 +30,13 @@ def test_generation_and_judging_share_client_with_distinct_configs():
     assert result.completion_status == "completed"
 
 
-def test_rag_pipeline_and_adapter_use_same_gemini_generation():
+def test_rag_pipeline_and_adapter_use_same_gemini_generation(tmp_path):
     from rag_diagnostic.adapters.open_ragbench import OpenRAGBenchAdapter
 
     client = FakeClient("The grounded answer.")
-    settings = Settings.from_env()
+    from dataclasses import replace
+
+    settings = replace(Settings.from_env(), diagnostics_dir=tmp_path)
     pipeline = RAGPipeline(settings, client=client)
     pipeline.retrieve = lambda query: [SearchResult("Source fact.", {"doc_id": "d"})]
     answer, results = pipeline.ask("Question?")

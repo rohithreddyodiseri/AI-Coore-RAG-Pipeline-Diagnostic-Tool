@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 from conftest import FACT, FakeClient, RecordedTarget, cite, report, sample_trace
 
-from rag_diagnostic.cases import DiagnosticCase
 from rag_diagnostic.config import DiagnosticConfig
 from rag_diagnostic.diagnose import Diagnoser
 from rag_diagnostic.diagnostic_engine import DiagnosticEngine, trace_artifacts
@@ -285,8 +284,8 @@ def test_pipeline_adapter_uses_trace_judge_without_corpus_or_gold(tmp_path):
 
     client = FakeClient(reply)
     diagnoser = Diagnoser(config, LLMJudge(config.judge_model, config.judge_cache, client))
-    case = DiagnosticCase("format", "Who built the tower? Return JSON.")
-    verdict = diagnoser.diagnose(case, TraceOnlyPipeline())
+    query = "Who built the tower? Return JSON."
+    verdict = diagnoser.diagnose(query, TraceOnlyPipeline())
     assert verdict.failure_category == "FP5"
     assert "deep.manifest" in verdict.observations["input"]["artifacts"]
 
@@ -303,7 +302,7 @@ def test_pipeline_capture_failure_is_recorded(tmp_path):
 
     config = DiagnosticConfig(runs_dir=str(tmp_path))
     with pytest.raises(RuntimeError, match="pipeline unavailable"):
-        Diagnoser(config, UnavailableJudge()).diagnose(DiagnosticCase("failed", "Why?"), Broken())
+        Diagnoser(config, UnavailableJudge()).diagnose("Why?", Broken())
     record = json.loads((tmp_path / "diagnoses.jsonl").read_text())
     assert record["status"] == "error"
     assert record["run"]["code_revision"]
@@ -347,9 +346,7 @@ def test_real_adapter_corpus_inspection_declares_scope(tmp_path):
 
     client = FakeClient(reply)
     diagnoser = Diagnoser(config, LLMJudge(config.judge_model, config.judge_cache, client))
-    verdict = diagnoser.diagnose(
-        DiagnosticCase("absent", "When did the ferry first sail?"), RecordedTarget()
-    )
+    verdict = diagnoser.diagnose("When did the ferry first sail?", RecordedTarget())
     assert verdict.failure_category == "FP1"
     assert observed[0]["corpus.manifest"]["complete"] is True
 

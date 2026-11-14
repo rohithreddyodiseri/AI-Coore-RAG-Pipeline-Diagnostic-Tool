@@ -6,7 +6,7 @@
 
 This project is a command-line retrieval-augmented generation (RAG) application that answers questions using documents from Open RAGBench.
 
-The application loads document text, splits it into smaller chunks, creates embeddings, and stores them in ChromaDB. When a user asks a question, it retrieves relevant chunks and sends them to `gemini-2.5-flash-lite` to generate an answer. The answer and retrieved source paper titles appear in the terminal.
+The application loads document text, splits it into smaller chunks, creates embeddings, and stores them in ChromaDB. When a user asks a question, it retrieves relevant chunks and sends them to `gemini-3.5-flash-lite` to generate an answer. The answer and retrieved source paper titles appear in the terminal.
 
 This pipeline is the starting point for a larger project focused on diagnosing RAG failures.
 
@@ -144,7 +144,7 @@ Default settings:
 | Setting              | Default                                  |
 | -------------------- | ---------------------------------------- |
 | Embedding model      | `sentence-transformers/all-MiniLM-L6-v2` |
-| Generation model     | `gemini-2.5-flash-lite`                  |
+| Generation model     | `gemini-3.5-flash-lite`                  |
 | Vector database      | Persistent ChromaDB                      |
 | Similarity measure   | Cosine distance                          |
 | Collection           | `open_ragbench`                          |
@@ -304,25 +304,28 @@ The base RAG pipeline does not include hybrid retrieval or reranking. The separa
 
 All code is in the `main` branch and its `origin/main` tracking reference.
 
-## Diagnostic tool
+## Diagnostic telemetry integration
 
-The diagnostic tool connects directly to this project's RAG pipeline. It runs a
-query, captures the actual retrieval, context, prompt and generation artifacts,
-ingests the source corpus, and returns an evidence-cited stage attribution using
-the FP1–FP7 LLM evaluation matrix. It abstains when evidence is insufficient.
-
-With the corpus downloaded, index built, and `GEMINI_API_KEY` configured:
+Every query emits structured execution telemetry through `PipelineTrace`, including
+retrieval scores, exact context, generation inputs/output, and an immutable reference
+to captured index-build artifacts. The diagnostic tool consumes these records without
+rerunning the query or requiring a reference answer.
 
 ```bash
-source .venv/bin/activate
-python -m pip install -e '.[dev]'
-rag-diagnose "What methods improve retrieval quality?" \
-  --config configs/diagnostic.json --report-out runs/report.json
-````
+rag-pipeline ask "What methods improve retrieval quality?"
+rag-diagnose flag --trace /path/to/execution.jsonl --reason "Incomplete response"
+rag-diagnose ingest --trace /path/to/execution.jsonl --json
+```
 
-Add `--json` for structured terminal output or `--trace-out runs/trace.json` to
-save the original execution separately. The default adapter uses the same
-execution functions as `rag-pipeline ask`. Engineers can implement the documented
-adapter interface to connect another RAG system.
+To automatically consume flagged records:
 
-See [the run instructions and connection interface](docs/diagnostic-tool.md).
+```bash
+rag-diagnose watch --trace-dir data/diagnostics --config configs/diagnostic.json --json
+```
+
+Index builds capture parsing, chunking, embedding and corpus artifacts. Logs from
+older indexes remain usable with explicit limits on missing upstream evidence.
+The consumer uses the Gemini judge for FP1–FP7 attribution and preserves the original
+run ID, evidence, confidence and unresolved checks in its JSON report.
+
+See [the telemetry contract and operating guide](docs/diagnostic-tool.md).

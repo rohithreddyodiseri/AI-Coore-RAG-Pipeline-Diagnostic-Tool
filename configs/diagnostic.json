@@ -1,6 +1,6 @@
 {
   "judge": "llm",
-  "judge_model": "gemini-2.5-flash-lite",
+  "judge_model": "gemini-3.5-flash-lite",
   "abstain_below": 0.7,
   "deep_k": 20,
   "inspect_corpus": true,

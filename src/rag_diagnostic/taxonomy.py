@@ -6,7 +6,18 @@ A category and a pipeline stage are not interchangeable labels.
 
 from dataclasses import dataclass
 
-STAGES = ("corpus", "retrieval", "reranking", "context_assembly", "generation")
+STAGES = (
+    "corpus",
+    "parsing",
+    "chunking",
+    "document_embedding",
+    "indexing",
+    "query_embedding",
+    "retrieval",
+    "reranking",
+    "context_assembly",
+    "generation",
+)
 
 
 @dataclass(frozen=True)

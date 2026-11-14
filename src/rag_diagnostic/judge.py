@@ -76,6 +76,11 @@ Evaluate ALL SEVEN categories exactly once, in FP1-FP7 order, using this matrix:
     + """
 
 Walk the observed boundaries to distinguish retrieval, reranking, context loss, and generation.
+Index-build artifacts are historical observations, linked by index_run_id,
+not stages re-executed for the query. Use them as supporting evidence when their lineage applies.
+Embedding dimensions and vector hashes alone cannot establish embedding quality. Full vectors are
+retained in the captured trace for engineering review. Do not force operational errors or precursor
+losses into an unsupported FP1-FP7 category: use unknown for unsupported semantic attribution.
 Distinguish missing artifacts (unknown) from observed empty outputs. Supplementary deep search
 is an inspection probe, not the original retrieval. Do not infer corpus absence from top-K
 results, domain keywords, or a bounded search. corpus.manifest.complete is authoritative only

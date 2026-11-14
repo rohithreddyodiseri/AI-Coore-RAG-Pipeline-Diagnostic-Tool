@@ -168,6 +168,64 @@ def trace_artifacts(trace: dict[str, Any]) -> dict[str, dict[str, Any]]:
             )
         if stage.get("status") == "not_used":
             manifest(f"{name}.status", name, status="not_used")
+    for name in ("parsing", "chunking", "document_embedding", "indexing", "query_embedding"):
+        stage = stages.get(name, {})
+        if not isinstance(stage, dict):
+            raise ValueError(f"stages.{name} must be an object")
+        if "input_data" in stage:
+            add(
+                f"{name}.input",
+                name,
+                "stage_input",
+                json.dumps(stage["input_data"], sort_keys=True),
+            )
+        if "output_data" in stage:
+            output = stage["output_data"]
+            if name == "chunking":
+                chunks(name, name, output)
+                observed = artifacts[f"{name}.manifest"]
+                manifest(
+                    f"{name}.manifest",
+                    name,
+                    chunk_ids=observed["chunk_ids"],
+                    count=observed["count"],
+                    complete=stage.get("complete", True),
+                    total_records=stage.get("total_records", len(output)),
+                )
+            elif name == "parsing":
+                for i, document in enumerate(output):
+                    add(
+                        f"parsing.document.{i}",
+                        name,
+                        "document",
+                        document["text"],
+                        doc_id=str(document.get("metadata", {}).get("doc_id", "")),
+                    )
+                manifest(
+                    "parsing.manifest",
+                    name,
+                    count=len(output),
+                    complete=stage.get("complete", True),
+                )
+            elif name in ("document_embedding", "query_embedding"):
+                vectors = [item["vector"] if isinstance(item, dict) else item for item in output]
+                manifest(
+                    f"{name}.manifest",
+                    name,
+                    count=len(vectors),
+                    dimensions=sorted({len(vector) for vector in vectors}),
+                    vectors_sha256=hashlib.sha256(json.dumps(vectors).encode()).hexdigest(),
+                )
+            else:
+                manifest(f"{name}.manifest", name, **output)
+        if stage.get("status"):
+            manifest(
+                f"{name}.status",
+                name,
+                status=stage["status"],
+                recorded_at=stage.get("recorded_at"),
+                error=stage.get("error"),
+            )
     generation_input = stages.get("generation", {}).get("input_data", {})
     if isinstance(generation_input, dict) and "prompt" in generation_input:
         add("generation.prompt", "generation", "prompt", generation_input["prompt"])
@@ -201,11 +259,7 @@ class Verdict:
     suspects: tuple[str, ...] = ()
     observations: dict[str, Any] = field(default_factory=dict)
     run: RunRecord | None = None
-
-    @property
-    def case_id(self):
-        """Compatibility for offline evaluation code; runtime reports use run_id."""
-        return self.run_id
+    operational_failures: list[dict] = field(default_factory=list)
 
     @property
     def attributions(self):
@@ -449,7 +503,7 @@ class DiagnosticEngine:
     def diagnose(
         self,
         trace: dict,
-        case_id: str | None = None,
+        run_id: str | None = None,
         pipeline: dict | None = None,
         run: RunRecord | None = None,
     ) -> Verdict:
@@ -543,7 +597,7 @@ class DiagnosticEngine:
                 for citation in row["evidence"]
             ]
             verdict = Verdict(
-                run_id=case_id or str(trace.get("run_id", trace.get("case_id", fingerprint[:12]))),
+                run_id=run_id or str(trace.get("run_id", fingerprint[:12])),
                 query=trace["query"],
                 status=status,
                 primary_fault_stage=primary["stage"] if primary else None,
@@ -567,12 +621,17 @@ class DiagnosticEngine:
                 answer=trace.get("final_answer", trace.get("answer", "")),
                 explanation=[reason],
                 observations=observations,
+                operational_failures=[
+                    {"stage": name, "error": stage.get("error")}
+                    for name, stage in trace.get("stages", {}).items()
+                    if stage.get("status") == "failed"
+                ],
                 run=run,
             )
             append_jsonl(Path(self.config.runs_dir) / "diagnoses.jsonl", verdict.to_dict())
             return verdict
         except Exception as error:
-            self.record_error(trace, run, error, case_id)
+            self.record_error(trace, run, error, run_id)
             raise
 
     def _judge_view(self, trace):
@@ -581,16 +640,60 @@ class DiagnosticEngine:
         Source selection is inspection scoping, never a correctness or fault decision.
         Any omitted or shortened corpus content makes completeness false.
         """
+        stages = trace.get("stages", {})
+        bounded_stages = dict(stages)
+        views = 1 + sum(
+            isinstance(stages.get(name, {}).get("output_data"), list)
+            for name in ("parsing", "chunking")
+        )
+        text_budget = max(1, self.config.corpus_budget_chars // views)
+        retrieved = stages.get("retrieval", {}).get("output_data", trace.get("candidates", []))
+        relevant = [*retrieved, *trace.get("deep_retrieval", [])]
+        doc_ids = {row.get("doc_id") for row in relevant}
+        chunk_ids = {row.get("chunk_id") for row in relevant}
+        changed = False
+        for name in ("parsing", "chunking"):
+            stage = stages.get(name, {})
+            output = stage.get("output_data")
+            if (
+                not isinstance(output, list)
+                or sum(len(row.get("text", "")) for row in output) <= text_budget
+            ):
+                continue
+            remaining, selected = text_budget, []
+            ordered = sorted(
+                output,
+                key=lambda row: (
+                    row.get("chunk_id") not in chunk_ids,
+                    row.get("doc_id", row.get("metadata", {}).get("doc_id")) not in doc_ids,
+                    row.get("chunk_id", row.get("metadata", {}).get("doc_id", "")),
+                ),
+            )
+            for row in ordered:
+                if remaining <= 0:
+                    break
+                text = row.get("text", "")[:remaining]
+                selected.append({**row, "text": text})
+                remaining -= len(text)
+            bounded_stages[name] = {
+                **stage,
+                "output_data": selected,
+                "complete": False,
+                "total_records": len(output),
+            }
+            changed = True
+        if changed:
+            trace = {**trace, "stages": bounded_stages}
         corpus = trace.get("corpus") if isinstance(trace, dict) else None
         if not isinstance(corpus, dict) or not isinstance(corpus.get("documents"), list):
             return trace
         docs = corpus["documents"]
-        if sum(len(doc.get("text", "")) for doc in docs) <= self.config.corpus_budget_chars:
+        if sum(len(doc.get("text", "")) for doc in docs) <= text_budget:
             return trace
         stages = trace.get("stages", {})
         retrieved = stages.get("retrieval", {}).get("output_data", trace.get("candidates", []))
         priority = {doc.get("doc_id") for doc in [*retrieved, *trace.get("deep_retrieval", [])]}
-        remaining, selected, truncated = self.config.corpus_budget_chars, [], []
+        remaining, selected, truncated = text_budget, [], []
         for doc in sorted(
             docs, key=lambda d: (d.get("doc_id") not in priority, d.get("doc_id", ""))
         ):
@@ -614,11 +717,11 @@ class DiagnosticEngine:
             },
         }
 
-    def record_error(self, trace, run, error, case_id=None):
+    def record_error(self, trace, run, error, run_id=None):
         append_jsonl(
             Path(self.config.runs_dir) / "diagnoses.jsonl",
             {
-                "run_id": case_id,
+                "run_id": run_id,
                 "status": "error",
                 "trace": trace,
                 "error": str(error),

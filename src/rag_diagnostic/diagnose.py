@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from rag_diagnostic.adapter import PipelineAdapter
-from rag_diagnostic.cases import DiagnosticCase
 from rag_diagnostic.config import DiagnosticConfig
 from rag_diagnostic.diagnostic_engine import DiagnosticEngine, Verdict  # noqa: F401
 from rag_diagnostic.judge import Judge
@@ -18,9 +17,8 @@ class Diagnoser:
         self.engine = DiagnosticEngine(config, judge)
         self.judge = self.engine.judge
 
-    def diagnose(self, query: str | DiagnosticCase, adapter: PipelineAdapter) -> Verdict:
-        run_id = query.case_id if isinstance(query, DiagnosticCase) else None
-        query = query.query if isinstance(query, DiagnosticCase) else query
+    def diagnose(self, query: str, adapter: PipelineAdapter) -> Verdict:
+        run_id = None
         if not isinstance(query, str) or not query.strip():
             raise ValueError("query must be a nonempty string")
         run = RunRecord.capture(self.config, adapter)

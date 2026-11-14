@@ -4,29 +4,17 @@ from copy import deepcopy
 import pytest
 from conftest import FACT, FakeClient, report
 
-from rag_diagnostic.cases import DiagnosticCase, load_labels
 from rag_diagnostic.config import DiagnosticConfig
 from rag_diagnostic.diagnostic_engine import trace_artifacts
-from rag_diagnostic.evaluate import evaluate, render_report, split_cases
+from rag_diagnostic.evaluate import evaluate_traces, render_report, split_executions
 from rag_diagnostic.judge import LLMJudge, build_judge
+from rag_diagnostic.labels import load_labels
 from rag_diagnostic.trace import Context, QueryTrace, ScoredChunk
 
 
 def test_default_is_llm_as_judge(tmp_path):
     config = DiagnosticConfig(judge_cache=str(tmp_path / "cache.json"))
     assert isinstance(build_judge(config), LLMJudge)
-
-
-def test_query_only_cases():
-    assert DiagnosticCase.from_dict({"case_id": "a", "query": "Why?"}).pipeline == {}
-
-
-@pytest.mark.parametrize(
-    "key", ["reference_answer", "gold", "stages", "fault_type", "failure_categories"]
-)
-def test_case_refuses_oracles_and_labels(key):
-    with pytest.raises(ValueError):
-        DiagnosticCase.from_dict({"case_id": "a", "query": "Why?", key: []})
 
 
 @pytest.mark.parametrize("key", ["reference_answer", "gold", "expected_answer", "fault_type"])
@@ -74,41 +62,36 @@ def test_complete_corpus_contract(trace, change):
 
 
 def test_split_is_deterministic():
-    cases = [DiagnosticCase(str(i), f"Query {i}") for i in range(20)]
-    first = split_cases(cases, 0.3, "seed")
-    second = split_cases(list(reversed(cases)), 0.3, "seed")
-    assert {c.case_id for c in first[1]} == {c.case_id for c in second[1]}
+    executions = [{"run_id": str(i), "query": f"Query {i}"} for i in range(20)]
+    first = split_executions(executions, 0.3, "seed")
+    second = split_executions(list(reversed(executions)), 0.3, "seed")
+    assert {row["run_id"] for row in first[1]} == {row["run_id"] for row in second[1]}
 
 
-def test_evaluation_scores_category_and_stage(make_engine, trace, tmp_path):
-    from rag_diagnostic.cases import FaultLabel
+def test_evaluation_scores_category_and_stage(make_engine, trace):
+    from rag_diagnostic.labels import ExecutionLabel
 
     engine, _ = make_engine(report(trace, [("FP5", "generation", ["query", "generation.answer"])]))
-
-    class FixedDiagnoser:
-        def diagnose(self, case, adapter):
-            return engine.diagnose(trace, case.case_id)
-
-    cases = [DiagnosticCase("format", trace["query"])]
+    trace["run_id"] = "format"
     labels = {
-        "format": FaultLabel(
+        "format": ExecutionLabel(
             "format", frozenset({"generation"}), "wrong_format", frozenset({"FP5"})
         )
     }
-    scored = evaluate(cases, labels, lambda settings: None, FixedDiagnoser())
+    scored = evaluate_traces([trace], labels, engine)
     assert scored["accuracy_overall"] == 1
-    labels["format"] = FaultLabel(
+    labels["format"] = ExecutionLabel(
         "format", frozenset({"generation"}), "wrong_label", frozenset({"FP7"})
     )
-    scored = evaluate(cases, labels, lambda settings: None, FixedDiagnoser())
+    scored = evaluate_traces([trace], labels, engine)
     assert scored["accuracy_overall"] == 0
-    assert scored["wrong_cases"][0]["true_categories"] == "FP7"
+    assert scored["incorrect_runs"][0]["true_categories"] == "FP7"
     assert "| Fault type |" in render_report(scored)
 
 
 def test_label_categories_are_optional(tmp_path):
     path = tmp_path / "labels.jsonl"
-    path.write_text('{"case_id":"a","stages":[],"failure_categories":[]}\n')
+    path.write_text('{"run_id":"a","stages":[],"failure_categories":[]}\n')
     assert load_labels(path)["a"].categories == frozenset()
 
 
@@ -151,15 +134,15 @@ def test_removed_matching_config_is_rejected(tmp_path):
 
 
 def test_trace_evaluation_does_not_send_labels_to_judge(make_engine, trace):
-    from rag_diagnostic.cases import FaultLabel
     from rag_diagnostic.evaluate import evaluate_traces
+    from rag_diagnostic.labels import ExecutionLabel
 
-    trace["case_id"] = "case-1"
+    trace["run_id"] = "case-1"
     engine, client = make_engine(
         report(trace, [("FP5", "generation", ["query", "generation.answer"])])
     )
     labels = {
-        "case-1": FaultLabel(
+        "case-1": ExecutionLabel(
             "case-1", frozenset({"generation"}), "SECRET_LABEL", frozenset({"FP5"})
         )
     }
@@ -169,23 +152,23 @@ def test_trace_evaluation_does_not_send_labels_to_judge(make_engine, trace):
 
 
 def test_duplicate_trace_ids_are_rejected(make_engine, trace):
-    from rag_diagnostic.cases import FaultLabel
     from rag_diagnostic.evaluate import evaluate_traces
+    from rag_diagnostic.labels import ExecutionLabel
 
-    trace["case_id"] = "case-1"
+    trace["run_id"] = "case-1"
     engine, _ = make_engine(report(trace))
     with pytest.raises(ValueError, match="unique"):
         evaluate_traces(
-            [trace, trace], {"case-1": FaultLabel("case-1", frozenset(), "none")}, engine
+            [trace, trace], {"case-1": ExecutionLabel("case-1", frozenset(), "none")}, engine
         )
 
 
 def test_unknown_category_labels_are_rejected():
-    from rag_diagnostic.cases import FaultLabel
+    from rag_diagnostic.labels import ExecutionLabel
 
     with pytest.raises(ValueError):
-        FaultLabel.from_dict(
-            {"case_id": "a", "stages": ["generation"], "failure_categories": ["FP8"]}
+        ExecutionLabel.from_dict(
+            {"run_id": "a", "stages": ["generation"], "failure_categories": ["FP8"]}
         )
 
 

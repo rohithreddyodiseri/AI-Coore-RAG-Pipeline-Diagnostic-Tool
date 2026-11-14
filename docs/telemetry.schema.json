@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RAG Execution Telemetry v1",
+  "type": "object",
+  "required": ["schema_version", "run_id", "query", "execution_status", "stages"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "run_id": {"type": "string", "minLength": 1},
+    "query": {"type": "string", "minLength": 1},
+    "execution_status": {"enum": ["completed", "failed"]},
+    "pipeline": {"type": "object", "description": "Producer identity, code/settings, optional index_snapshot reference; no credentials or labels."},
+    "stages": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "status": {"enum": ["completed", "failed", "not_used", "unknown"]},
+          "input_data": {},
+          "output_data": {},
+          "error": {"type": "object"},
+          "recorded_at": {"type": "string"},
+          "index_run_id": {"type": "string"}
+        }
+      }
+    },
+    "final_answer": {"type": "string"},
+    "generation_instructions": {"type": "string"},
+    "failure_signal": {
+      "type": "object",
+      "required": ["flagged"],
+      "properties": {"flagged": {"type": "boolean"}, "reason": {"type": ["string", "null"]}}
+    },
+    "corpus": {
+      "type": "object",
+      "required": ["documents", "complete"],
+      "properties": {
+        "documents": {"type": "array", "items": {"type": "object", "required": ["doc_id", "text"], "properties": {"doc_id": {"type": "string"}, "text": {"type": "string"}}}},
+        "complete": {"type": "boolean"},
+        "scope": {"type": "string"},
+        "snapshot_id": {"type": "string"}
+      },
+      "if": {"properties": {"complete": {"const": true}}},
+      "then": {"required": ["scope", "snapshot_id"]}
+    }
+  }
+}
