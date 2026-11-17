@@ -13,7 +13,7 @@ The result is an evidence-backed JSON report containing:
 - unresolved categories and attribution limits;
 - the configuration, source revision, model metadata, and trace used for the run.
 
-The taxonomy follows Barnett et al., [*Seven Failure Points When Engineering a Retrieval Augmented Generation System*](https://arxiv.org/pdf/2401.05856).
+The taxonomy follows Barnett et al., [_Seven Failure Points When Engineering a Retrieval Augmented Generation System_](https://arxiv.org/pdf/2401.05856).
 
 ## Architecture at a Glance
 
@@ -58,15 +58,15 @@ The Gemini judge runs with `temperature: 0.1` and a strict JSON response schema.
 
 The prompt requires exactly one evaluation for every category, in FP1–FP7 order.
 
-| Category | Primary fault stage | Evidence required for attribution |
-|---|---|---|
-| **FP1 — Missing Content** | `corpus` | The required information is absent from a complete, explicitly scoped corpus snapshot. Absence from top-K retrieval is not enough. |
-| **FP2 — Missed Top Ranked** | `retrieval` or `reranking` | Relevant indexed evidence is observed below the selection cutoff, or before/after reranking evidence proves the loss. Keyword overlap alone is insufficient. |
-| **FP3 — Not in Context** | `context_assembly` or `reranking` | Relevant retrieved text is cited at the upstream boundary and shown to be absent from the exact context sent to generation. |
-| **FP4 — Not Extracted** | `generation` | The required fact appears in the exact generation context, but the generated answer fails to use it. |
-| **FP5 — Wrong Format** | `generation` | An explicit query or system-instruction format constraint is cited together with the response that violates it. |
-| **FP6 — Incorrect Specificity** | `generation` | The requested audience, scope, or level of detail is unambiguous, and the response is demonstrably too vague or too granular. |
-| **FP7 — Incomplete Answer** | `generation` | The query's requested parts, the context facts supporting those parts, and the response's omission are all observed. |
+| Category                        | Primary fault stage               | Evidence required for attribution                                                                                                                            |
+| ------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **FP1 — Missing Content**       | `corpus`                          | The required information is absent from a complete, explicitly scoped corpus snapshot. Absence from top-K retrieval is not enough.                           |
+| **FP2 — Missed Top Ranked**     | `retrieval` or `reranking`        | Relevant indexed evidence is observed below the selection cutoff, or before/after reranking evidence proves the loss. Keyword overlap alone is insufficient. |
+| **FP3 — Not in Context**        | `context_assembly` or `reranking` | Relevant retrieved text is cited at the upstream boundary and shown to be absent from the exact context sent to generation.                                  |
+| **FP4 — Not Extracted**         | `generation`                      | The required fact appears in the exact generation context, but the generated answer fails to use it.                                                         |
+| **FP5 — Wrong Format**          | `generation`                      | An explicit query or system-instruction format constraint is cited together with the response that violates it.                                              |
+| **FP6 — Incorrect Specificity** | `generation`                      | The requested audience, scope, or level of detail is unambiguous, and the response is demonstrably too vague or too granular.                                |
+| **FP7 — Incomplete Answer**     | `generation`                      | The query's requested parts, the context facts supporting those parts, and the response's omission are all observed.                                         |
 
 Each category evaluation has one of four states:
 
@@ -170,11 +170,11 @@ If one row violates a guardrail, that row becomes `unknown` with an abstention r
 
 The engine derives the final result from the validated rows rather than trusting the LLM's summary blindly:
 
-| Validated result | Report fields |
-|---|---|
-| One or more supported faults | `status: "diagnosed"`; primary `failure_category` is an FP code. |
-| No supported faults and at least one unresolved category | `status: "abstained"`; `failure_category: "ABSTAIN"`. |
-| Every category confidently clear or inapplicable | `status: "no_failure"`; `failure_category: "NONE"`. |
+| Validated result                                         | Report fields                                                    |
+| -------------------------------------------------------- | ---------------------------------------------------------------- |
+| One or more supported faults                             | `status: "diagnosed"`; primary `failure_category` is an FP code. |
+| No supported faults and at least one unresolved category | `status: "abstained"`; `failure_category: "ABSTAIN"`.            |
+| Every category confidently clear or inapplicable         | `status: "no_failure"`; `failure_category: "NONE"`.              |
 
 If the LLM's proposed primary category does not survive validation, the engine selects the first supported category and records that normalization in the explanation.
 
@@ -188,15 +188,15 @@ Operational exceptions are preserved separately in `operational_failures`. They 
 
 For every query, the reference pipeline creates a unique `run_id` and appends JSONL events for the observed stages. The emitted data includes:
 
-| Observation | Captured content |
-|---|---|
-| Query | Query text, collection, top-K, embedding model, generation model, and provider. |
-| Query embedding | Actual embedding-stage inputs and outputs. |
-| Retrieval | Selected chunks, document/chunk IDs, ranks, similarity-derived scores, metadata, and cutoff. |
-| Reranking | Actual reranker output for external pipelines; `not_used` in the reference pipeline. |
-| Context assembly | Retrieved inputs, exact assembled context, included chunk IDs, and generation instructions. |
-| Generation | Exact prompt, system instruction, model, temperature, final answer, timing, and errors. |
-| Terminal execution | Versioned execution envelope, completion status, and failure signal. |
+| Observation        | Captured content                                                                             |
+| ------------------ | -------------------------------------------------------------------------------------------- |
+| Query              | Query text, collection, top-K, embedding model, generation model, and provider.              |
+| Query embedding    | Actual embedding-stage inputs and outputs.                                                   |
+| Retrieval          | Selected chunks, document/chunk IDs, ranks, similarity-derived scores, metadata, and cutoff. |
+| Reranking          | Actual reranker output for external pipelines; `not_used` in the reference pipeline.         |
+| Context assembly   | Retrieved inputs, exact assembled context, included chunk IDs, and generation instructions.  |
+| Generation         | Exact prompt, system instruction, model, temperature, final answer, timing, and errors.      |
+| Terminal execution | Versioned execution envelope, completion status, and failure signal.                         |
 
 Index builds separately capture immutable, checksummed artifacts for parsing, chunking, document embeddings, indexing metadata, and the corpus snapshot. Query traces link to the applicable index-build manifest. These are historical build observations and are not represented as stages rerun for each query.
 
@@ -216,7 +216,7 @@ The native payload is a versioned JSON object:
   },
   "stages": {
     "retrieval": {},
-    "reranking": {"status": "not_used"},
+    "reranking": { "status": "not_used" },
     "context_assembly": {},
     "generation": {}
   },
@@ -325,15 +325,15 @@ rag-diagnose watch --trace-dir data/diagnostics --config configs/diagnostic.json
 
 ## Implementation Map
 
-| Responsibility | Module |
-|---|---|
-| Pipeline event capture and execution envelope | `src/rag_pipeline/diagnostics.py` |
-| Query execution and trace publication | `src/rag_pipeline/pipeline.py` |
-| Immutable index/corpus telemetry | `src/rag_pipeline/index_telemetry.py` |
-| Trace loading, flagging, and artifact verification | `src/rag_diagnostic/telemetry.py` |
-| Flagged-run polling and report persistence | `src/rag_diagnostic/ingestion.py` |
+| Responsibility                                               | Module                                    |
+| ------------------------------------------------------------ | ----------------------------------------- |
+| Pipeline event capture and execution envelope                | `src/rag_pipeline/diagnostics.py`         |
+| Query execution and trace publication                        | `src/rag_pipeline/pipeline.py`            |
+| Immutable index/corpus telemetry                             | `src/rag_pipeline/index_telemetry.py`     |
+| Trace loading, flagging, and artifact verification           | `src/rag_diagnostic/telemetry.py`         |
+| Flagged-run polling and report persistence                   | `src/rag_diagnostic/ingestion.py`         |
 | Artifact normalization, validation, and verdict construction | `src/rag_diagnostic/diagnostic_engine.py` |
-| LLM prompt, JSON schema, cache, and Gemini judge | `src/rag_diagnostic/judge.py` |
-| FP1–FP7 definitions and compatible stages | `src/rag_diagnostic/taxonomy.py` |
-| Diagnostic settings and thresholds | `src/rag_diagnostic/config.py` |
-| Shared Gemini transport | `src/gemini_client.py` |
+| LLM prompt, JSON schema, cache, and Gemini judge             | `src/rag_diagnostic/judge.py`             |
+| FP1–FP7 definitions and compatible stages                    | `src/rag_diagnostic/taxonomy.py`          |
+| Diagnostic settings and thresholds                           | `src/rag_diagnostic/config.py`            |
+| Shared Gemini transport                                      | `src/gemini_client.py`                    |
