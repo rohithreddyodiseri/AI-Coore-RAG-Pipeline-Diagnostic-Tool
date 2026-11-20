@@ -117,17 +117,17 @@ the producer deliberately bypassed a stage. The reference pipeline currently has
 no reranker and records it as `not_used`; external systems should emit their real
 reranking results.
 
-| Stage | Captured evidence |
-|---|---|
-| Parsing | Parsed document/section text with source metadata, recorded during indexing. |
-| Chunking | Actual stable chunk IDs, source IDs, text, section/chunk metadata. |
-| Document embedding | Chunk-to-vector mapping and configured embedding model. |
-| Indexing | Build lineage, embedding model, collection and indexed chunk count. |
-| Query embedding | Actual model input and the query vector used for retrieval. |
-| Retrieval | Requested cutoff and returned chunk IDs, text, source metadata, ranks and similarity scores. |
-| Reranking | Actual reordered outputs, or an explicit unused stage. |
-| Context assembly | Selected chunk IDs and exact model context text. |
-| Generation | Actual prompt, system instructions, model, temperature, and response. |
+| Stage              | Captured evidence                                                                            |
+| ------------------ | -------------------------------------------------------------------------------------------- |
+| Parsing            | Parsed document/section text with source metadata, recorded during indexing.                 |
+| Chunking           | Actual stable chunk IDs, source IDs, text, section/chunk metadata.                           |
+| Document embedding | Chunk-to-vector mapping and configured embedding model.                                      |
+| Indexing           | Build lineage, embedding model, collection and indexed chunk count.                          |
+| Query embedding    | Actual model input and the query vector used for retrieval.                                  |
+| Retrieval          | Requested cutoff and returned chunk IDs, text, source metadata, ranks and similarity scores. |
+| Reranking          | Actual reordered outputs, or an explicit unused stage.                                       |
+| Context assembly   | Selected chunk IDs and exact model context text.                                             |
+| Generation         | Actual prompt, system instructions, model, temperature, and response.                        |
 
 Retrieval/reranking outputs use arrays of objects with `chunk_id`, `doc_id`, `text`,
 positive one-based `rank`, and `score`. Their `k` is the applicable selection
@@ -168,6 +168,136 @@ event. A terminal `stage: "execution"` event carries the standard envelope in
 logs are also reconstructed when their query completion event is available.
 In-progress records and partial trailing writes are retried. Multiple runs in a
 file are processed independently; manual ingestion selects one using `--run-id`.
+–
+
+## OpenTelemetry producer contract v1
+
+The application exports standard OTLP spans with an OpenTelemetry SDK. The
+diagnostic receiver assembles spans and writes one normalized JSON record per RAG
+execution using [telemetry.schema.json](telemetry.schema.json). The schema also
+covers the existing file-based execution envelope. The application can reuse
+its current stage hooks and does not need a second exporter or a JSON file
+writer for this integration. See the
+[OTLP exporter configuration](https://opentelemetry.io/docs/languages/sdk-configuration/otlp-exporter/).
+
+### What the reference app should emit
+
+1. Configure an OTLP trace exporter and batch span processor at server startup.
+   For OTLP/HTTP, set `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf` and
+   set `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` to the onboarding URL including
+   `/v1/traces`. Set `OTEL_SERVICE_NAME` to the registered name and
+   `OTEL_EXPORTER_OTLP_TRACES_HEADERS` to the credential header from onboarding.
+   Inject the credential into the server environment. Never put it in a span.
+2. Open one execution span named `rag.query` around each user query. It may
+   be a child of an existing HTTP span. Set the version when opening the span
+   and the outcome before ending it. A runtime error is flagged automatically
+   by the receiver. To flag a completed query for quality review, set the
+   failure flag or send feedback separately after the span ends.
+3. Wrap each observed logical stage with a descendant span and propagate the
+   active context through async work. Add these attributes to existing spans
+   where practical. Emit at most one tagged span per stage per execution.
+   Keep retries and individual provider calls as ordinary descendants of that
+   logical stage. The receiver identifies stages by attribute, so existing
+   instrumentation can keep its span names. In the reference pipeline, tag
+   the existing `prompt_construction` step as `context_assembly`.
+
+| Location       | Attribute                                       | Type         | Requirement and meaning                                                                              |
+| -------------- | ----------------------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------- |
+| Resource       | `service.name`                                  | string       | Required on the execution span's resource. Matches the registered service.                           |
+| Execution span | `rag.telemetry.version`                         | string       | Required. Set to `1.0`.                                                                              |
+| Execution span | `rag.execution.status`                          | string       | Required. `completed` or `failed`. Also set OpenTelemetry span status to ERROR for runtime failures. |
+| Execution span | `rag.query.text`                                | string       | Optional. Actual nonblank query text, needed for engine diagnosis.                                   |
+| Execution span | `rag.answer.text`                               | string       | Optional. Final answer actually returned to the caller.                                              |
+| Execution span | `rag.generation.instructions`                   | string       | Optional. Actual generation instructions used.                                                       |
+| Execution span | `rag.failure.flagged`                           | boolean      | Optional. True to request diagnosis of a completed query. Defaults to false for completed queries.   |
+| Execution span | `rag.failure.reason`                            | string       | Optional. Sanitized reason for review.                                                               |
+| Execution span | `rag.stages.not_used`                           | string array | Optional. Stages the application deliberately bypassed, such as reranking.                           |
+| Stage span     | `rag.stage`                                     | string       | Required for stages in the table below. Use the canonical stage name.                                |
+| Stage span     | `rag.stage.status`                              | string       | Required. `completed` or `failed`. Set span status to ERROR for a failed stage.                      |
+| Stage span     | `rag.stage.k`                                   | integer      | Optional. Actual positive cutoff requested for retrieval or reranking.                               |
+| Stage span     | `rag.stage.input_json`, `rag.stage.output_json` | string       | Optional. Each string contains one complete JSON value using the shapes below.                       |
+| Stage span     | `error.type`                                    | string       | Optional. A sanitized error category for a failed stage.                                             |
+
+Capture metadata by default. Queries, prompts, retrieved passages, model
+responses, and vectors are opt-in evidence. Apply redaction and size limits
+before export. Omit an evidence attribute if policy or limits prevent sending a
+whole meaningful value. Do not truncate the JSON string, substitute an empty
+array for omitted results, or include credentials, reference answers, or
+ground-truth labels. Apply the same content policy to auto-instrumented spans.
+
+### Evidence shapes and receiver mapping
+
+| Stage                    | Decoded `output_data` when available                                                                                                                                                                                       |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `query_embedding`        | Array of vectors, such as `[[0.1, 0.2]]`.                                                                                                                                                                                  |
+| `retrieval`, `reranking` | Ordered array of objects with `chunk_id`, `text`, and one-based `rank`, plus `doc_id` and numerical `score` if available. Use `[]` only when the observed stage returned zero results.                                     |
+| `context_assembly`       | Actual context string or `{"text":"…","chunk_ids":["c1"]}` in context order.                                                                                                                                               |
+| `generation`             | Actual model output string. Optional `input_data` is an object with fields such as `prompt`, `model`, and `system_instruction`. Set `rag.answer.text` on the execution span when the final answer is available separately. |
+
+The receiver uses the authenticated app and tenant as the storage scope. It
+groups spans by trace ID, deduplicates by span ID, and assigns each tagged stage
+to its nearest execution-span ancestor. Use OTLP timestamps to compute
+`duration_ms`. A batch may carry parts of several traces, and the execution
+span can arrive before a stage. Allow a bounded assembly window after the
+execution span arrives, then emit the observed stages. Spans with missing
+parentage or ambiguous duplicate stage tags must stay available for trace
+inspection without being converted into diagnostic evidence. Record ambiguity,
+invalid evidence, or known assembly gaps in `inspection_errors`. Keep
+unsupported contract versions available for inspection without applying the v1
+mapping.
+
+Copy the resource name, trace ID, and execution span ID into `otel` using
+lowercase hexadecimal IDs. Set `run_id` to `trace_id:execution_span_id` so
+multiple executions under one request trace stay distinct. Copy the execution
+status, query, answer, and instructions to their envelope fields. Set
+`failure_signal.flagged` to true for a failed execution or an explicit quality
+flag, and false otherwise. Copy the optional reason into `failure_signal.reason`.
+Map each tagged span to `stages[rag.stage]`, copying its status, ID, duration,
+and cutoff. Parse the optional JSON attributes and map `error.type` to
+`error.type` in the stage record. Discard malformed evidence with an
+inspection note and retain the valid stage metadata. Use `not_used` only for
+stages explicitly declared bypassed. An absent span is missing evidence.
+
+Validate the normalized record against the schema. Require a nonblank
+`query` before passing a flagged record to `DiagnosticEngine.diagnose`.
+If it is missing, retain the trace and report insufficient evidence without
+invoking the engine. The existing file CLI expects query-bearing records.
+Index-build artifacts and corpus snapshots are optional separate evidence.
+Leave them out of the basic OTLP integration.
+
+For example, on a completed `rag.query` span set
+`rag.failure.flagged=true` and `rag.failure.reason="Empty retrieval"`.
+On its retrieval span set `rag.stage="retrieval"`,
+`rag.stage.status="completed"`, `rag.stage.k=5`, and
+`rag.stage.output_json="[]"` (a string containing an empty JSON array).
+With query capture enabled and reranking declared bypassed, the receiver
+produces:
+
+```json
+{
+  "schema_version": "1.0",
+  "run_id": "aabbccddeeff00112233445566778899:1122334455667788",
+  "otel": {
+    "contract_version": "1.0",
+    "trace_id": "aabbccddeeff00112233445566778899",
+    "execution_span_id": "1122334455667788",
+    "service_name": "reference-rag"
+  },
+  "query": "How are documents ranked?",
+  "execution_status": "completed",
+  "failure_signal": { "flagged": true, "reason": "Empty retrieval" },
+  "stages": {
+    "retrieval": {
+      "status": "completed",
+      "span_id": "2233445566778899",
+      "duration_ms": 14,
+      "k": 5,
+      "output_data": []
+    },
+    "reranking": { "status": "not_used" }
+  }
+}
+```
 
 ## Attribution and evidence limits
 
@@ -176,15 +306,15 @@ all supported findings/contributors, confidence, concise justifications, and exa
 artifact citations. The taxonomy follows
 [Barnett et al., section 5](https://arxiv.org/pdf/2401.05856).
 
-| Category | Required evidence |
-|---|---|
-| FP1 Missing Content | A complete named corpus view; absence from top-K alone is insufficient. |
-| FP2 Missed Top Ranked | Relevant indexed evidence demonstrably below a selection cutoff. |
-| FP3 Not in Context | Retrieved information lost before the exact model context. |
-| FP4 Not Extracted | Required context facts not used in the response. |
-| FP5 Wrong Format | An explicit format constraint violated by the response. |
-| FP6 Incorrect Specificity | A supported mismatch between requested scope/detail and the answer. |
-| FP7 Incomplete Answer | Requested parts omitted despite their facts being available in context. |
+| Category                  | Required evidence                                                       |
+| ------------------------- | ----------------------------------------------------------------------- |
+| FP1 Missing Content       | A complete named corpus view; absence from top-K alone is insufficient. |
+| FP2 Missed Top Ranked     | Relevant indexed evidence demonstrably below a selection cutoff.        |
+| FP3 Not in Context        | Retrieved information lost before the exact model context.              |
+| FP4 Not Extracted         | Required context facts not used in the response.                        |
+| FP5 Wrong Format          | An explicit format constraint violated by the response.                 |
+| FP6 Incorrect Specificity | A supported mismatch between requested scope/detail and the answer.     |
+| FP7 Incomplete Answer     | Requested parts omitted despite their facts being available in context. |
 
 An external producer may include `deep_retrieval` results with `deep_k` to support
 FP2. Live optional adapters can also gather such a probe. Saved-trace ingestion

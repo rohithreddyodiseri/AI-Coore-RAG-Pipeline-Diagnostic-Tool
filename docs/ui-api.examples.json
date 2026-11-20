@@ -1,0 +1,219 @@
+{
+  "RegisterApp": {
+    "service_name": "reference-rag",
+    "framework": "custom",
+    "environments": ["production", "staging"]
+  },
+  "OnboardingPackage": {
+    "app": {
+      "app_id": "app_ref",
+      "service_name": "reference-rag",
+      "framework": "custom",
+      "environments": ["production", "staging"],
+      "created_at": "2026-11-20T15:00:00Z",
+      "last_trace_at": null
+    },
+    "key_id": "key_ref",
+    "span_contract_version": "1.0",
+    "span_contract_url": "https://diagnostic.example/docs/span-contract/v1",
+    "env": {
+      "OTEL_EXPORTER_OTLP_ENDPOINT": "https://ingest.diagnostic.example",
+      "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+      "OTEL_EXPORTER_OTLP_HEADERS": "Authorization=Bearer%20example-placeholder",
+      "OTEL_SERVICE_NAME": "reference-rag"
+    },
+    "snippets": [
+      {
+        "language": "python",
+        "label": "Python OpenTelemetry exporter",
+        "code": "from opentelemetry import trace\nfrom opentelemetry.sdk.resources import Resource\nfrom opentelemetry.sdk.trace import TracerProvider\nfrom opentelemetry.sdk.trace.export import BatchSpanProcessor\nfrom opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter\n\nprovider = TracerProvider(resource=Resource.create())\nprovider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))\ntrace.set_tracer_provider(provider)"
+      }
+    ]
+  },
+  "Dashboard": {
+    "window": { "from": "2026-11-20T15:00:00Z", "to": "2026-11-20T16:00:00Z" },
+    "coverage": "all_reported",
+    "totals": {
+      "observed_traces": 20,
+      "runtime_failed_traces": 1,
+      "flagged_traces": 4,
+      "analyzed_flagged_traces": 3,
+      "abstained_traces": 1,
+      "abstention_rate": 0.3333
+    },
+    "apps": [
+      {
+        "app_id": "app_ref",
+        "service_name": "reference-rag",
+        "counts": {
+          "observed_traces": 20,
+          "runtime_failed_traces": 1,
+          "flagged_traces": 4,
+          "analyzed_flagged_traces": 3,
+          "abstained_traces": 1,
+          "abstention_rate": 0.3333
+        },
+        "latency_bottlenecks": [{ "stage": "generation", "sample_count": 18, "avg_ms": 180 }]
+      }
+    ],
+    "latency_bottlenecks": [{ "stage": "generation", "sample_count": 18, "avg_ms": 180 }],
+    "primary_category_counts": { "FP1": 0, "FP2": 0, "FP3": 1, "FP4": 0, "FP5": 0, "FP6": 0, "FP7": 0 }
+  },
+  "TraceDetail": {
+    "execution": {
+      "execution_id": "exec_42",
+      "trace_id": "11223344556677889900aabbccddeeff",
+      "app_id": "app_ref",
+      "environment": "staging",
+      "started_at": "2026-11-20T15:10:00Z",
+      "duration_ms": 225,
+      "status": "completed",
+      "flagged": true,
+      "diagnosis_state": "completed"
+    },
+    "graph": {
+      "nodes": [
+        { "node_id": "retrieve", "stage": "retrieval", "label": "Retrieve chunks", "status": "completed", "duration_ms": 14, "artifact_ids": ["retrieval.chunks", "retrieval.chunk.0"] },
+        { "node_id": "context", "stage": "context_assembly", "label": "Build context", "status": "completed", "duration_ms": 3, "artifact_ids": ["context.text"] },
+        { "node_id": "generate", "stage": "generation", "label": "Generate answer", "status": "completed", "duration_ms": 180, "tokens": { "input": 280, "output": 26 }, "artifact_ids": [] }
+      ],
+      "edges": [
+        { "from": "retrieve", "to": "context", "kind": "observed_dependency" },
+        { "from": "context", "to": "generate", "kind": "observed_dependency" }
+      ]
+    },
+    "latest_live_diagnosis": {
+      "diagnostic_run_id": "diag_42",
+      "execution_id": "exec_42",
+      "source": "live",
+      "state": "completed",
+      "created_at": "2026-11-20T15:10:01Z",
+      "finished_at": "2026-11-20T15:10:04Z",
+      "audit": {
+        "tool_version": "1.0.0",
+        "git_sha": "1234567890abcdef1234567890abcdef12345678",
+        "dirty_worktree": false,
+        "engine_source_sha256": null,
+        "config_fingerprint": "example-config",
+        "judge": {
+          "provider": "gemini",
+          "model": "configured-model-alias",
+          "model_version": null,
+          "temperature": 0.1,
+          "prompt_version": "3",
+          "prompt_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "output_schema_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      "verdict": {
+        "status": "diagnosed",
+        "primary_stage": "context_assembly",
+        "category": "FP3",
+        "confidence": 0.89,
+        "contributing_stages": [],
+        "unresolved_categories": ["FP1"],
+        "summary": "A retrieved passage relevant to the question was omitted from the generation context.",
+        "evidence_trail": [
+          {
+            "stage": "context_assembly",
+            "category": "FP3",
+            "finding": "The retrieved passage states the cutoff, but the generated context contains only a ranking overview.",
+            "citations": [
+              { "artifact_id": "retrieval.chunk.0", "quote": "The cutoff is 15 results." },
+              { "artifact_id": "context.text", "quote": "Results are ranked by similarity." }
+            ]
+          }
+        ],
+        "recommendations": [
+          {
+            "action": "Test retaining the passage when the context limit is reached.",
+            "origin": "rule",
+            "related_artifact_ids": ["retrieval.chunk.0", "context.text"]
+          }
+        ]
+      }
+    },
+    "replay_capabilities": {
+      "judge_only": { "available": true, "reason": null, "supported_overrides": [] },
+      "pipeline_what_if": { "available": false, "reason": "No sandbox runner is configured for this app.", "supported_overrides": [] }
+    }
+  },
+  "artifacts_by_id": {
+    "retrieval.chunks": {
+      "artifact_id": "retrieval.chunks",
+      "kind": "chunks",
+      "availability": "available",
+      "content": [
+        { "chunk_id": "c1", "doc_id": "d1", "rank": 1, "score": 0.89, "text": "The cutoff is 15 results." }
+      ]
+    },
+    "retrieval.chunk.0": {
+      "artifact_id": "retrieval.chunk.0",
+      "kind": "output",
+      "availability": "available",
+      "content": "The cutoff is 15 results."
+    },
+    "context.text": {
+      "artifact_id": "context.text",
+      "kind": "context",
+      "availability": "available",
+      "content": "Results are ranked by similarity."
+    }
+  },
+  "BenchmarkReport": {
+    "benchmark_id": "bench_01",
+    "dataset": { "name": "synthetic-faults", "version": "fixture-v1", "split": "held_out" },
+    "created_at": "2026-11-20T15:20:00Z",
+    "audit": {
+      "tool_version": "1.0.0",
+      "git_sha": "1234567890abcdef1234567890abcdef12345678",
+      "dirty_worktree": false,
+      "engine_source_sha256": null,
+      "config_fingerprint": "example-config",
+      "judge": {
+        "provider": "gemini",
+        "model": "configured-model-alias",
+        "model_version": null,
+        "temperature": 0.1,
+        "prompt_version": "3",
+        "prompt_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "output_schema_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    "evaluated": 4,
+    "abstained": 1,
+    "accuracy_overall": 0.5,
+    "accuracy_when_answered": 0.6667,
+    "matrices": [
+      {
+        "axis": "stage_set",
+        "actual_labels": ["context_assembly", "generation"],
+        "predicted_labels": ["context_assembly", "generation", "ABSTAIN"],
+        "cells": [
+          { "actual": "context_assembly", "predicted": "context_assembly", "count": 1 },
+          { "actual": "context_assembly", "predicted": "ABSTAIN", "count": 1 },
+          { "actual": "generation", "predicted": "generation", "count": 1 },
+          { "actual": "generation", "predicted": "context_assembly", "count": 1 }
+        ]
+      }
+    ],
+    "per_label_metrics": [
+      { "axis": "stage", "label": "context_assembly", "support": 2, "precision": 0.5, "recall": 0.5 },
+      { "axis": "stage", "label": "generation", "support": 2, "precision": 1, "recall": 0.5 }
+    ]
+  },
+  "ReplayRequest": {
+    "mode": "judge_only",
+    "overrides": {}
+  },
+  "ReplayJob": {
+    "replay_id": "replay_1",
+    "source_execution_id": "exec_42",
+    "request": { "mode": "judge_only", "overrides": {} },
+    "state": "completed",
+    "created_at": "2026-11-20T15:15:00Z",
+    "finished_at": "2026-11-20T15:15:03Z",
+    "result_execution_id": "exec_42",
+    "diagnostic_run_id": "diag_43"
+  }
+}

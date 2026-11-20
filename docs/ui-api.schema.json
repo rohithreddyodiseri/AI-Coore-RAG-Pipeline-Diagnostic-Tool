@@ -1,0 +1,551 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Diagnostic UI API payloads v1",
+  "description": "Validate each request or response against the route-specific definition in ui-api.md.",
+  "$defs": {
+    "Id": { "type": "string", "minLength": 1 },
+    "Timestamp": { "type": "string", "format": "date-time" },
+    "Count": { "type": "integer", "minimum": 0 },
+    "Milliseconds": { "type": "number", "minimum": 0 },
+    "Rate": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+    "Sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "Category": { "enum": ["FP1", "FP2", "FP3", "FP4", "FP5", "FP6", "FP7"] },
+    "Stage": {
+      "enum": ["corpus", "parsing", "chunking", "document_embedding", "indexing", "query_rewrite", "query_embedding", "retrieval", "reranking", "context_assembly", "generation"]
+    },
+    "Error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "$ref": "#/$defs/Id" },
+        "message": { "type": "string" },
+        "field_errors": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "Page": {
+      "type": "object",
+      "required": ["next_cursor"],
+      "properties": { "next_cursor": { "type": ["string", "null"] } }
+    },
+    "RegisterApp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service_name", "framework", "environments"],
+      "properties": {
+        "service_name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$" },
+        "framework": { "type": "string", "minLength": 1, "description": "Framework identifier such as langchain, llamaindex, or custom." },
+        "environments": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" }
+        }
+      }
+    },
+    "App": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["app_id", "service_name", "framework", "environments", "created_at", "last_trace_at"],
+      "properties": {
+        "app_id": { "$ref": "#/$defs/Id" },
+        "service_name": { "type": "string" },
+        "framework": { "type": "string" },
+        "environments": { "type": "array", "items": { "type": "string" } },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "last_trace_at": { "anyOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }] }
+      }
+    },
+    "AppList": {
+      "allOf": [{ "$ref": "#/$defs/Page" }],
+      "required": ["items"],
+      "properties": { "items": { "type": "array", "items": { "$ref": "#/$defs/App" } } }
+    },
+    "OnboardingPackage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["app", "key_id", "span_contract_version", "span_contract_url", "env", "snippets"],
+      "properties": {
+        "app": { "$ref": "#/$defs/App" },
+        "key_id": { "$ref": "#/$defs/Id" },
+        "span_contract_version": { "const": "1.0" },
+        "span_contract_url": { "type": "string", "format": "uri" },
+        "env": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_PROTOCOL", "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_SERVICE_NAME"],
+          "properties": {
+            "OTEL_EXPORTER_OTLP_ENDPOINT": { "type": "string", "format": "uri", "pattern": "^https://" },
+            "OTEL_EXPORTER_OTLP_PROTOCOL": { "const": "http/protobuf" },
+            "OTEL_EXPORTER_OTLP_HEADERS": { "type": "string", "minLength": 1 },
+            "OTEL_SERVICE_NAME": { "type": "string", "minLength": 1 }
+          }
+        },
+        "snippets": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["language", "label", "code"],
+            "properties": {
+              "language": { "type": "string" },
+              "label": { "type": "string" },
+              "code": { "type": "string", "description": "References environment variables and never contains the key." }
+            }
+          }
+        }
+      }
+    },
+    "Window": {
+      "type": "object",
+      "required": ["from", "to"],
+      "properties": {
+        "from": { "$ref": "#/$defs/Timestamp" },
+        "to": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "HealthCounts": {
+      "type": "object",
+      "required": ["observed_traces", "runtime_failed_traces", "flagged_traces", "analyzed_flagged_traces", "abstained_traces", "abstention_rate"],
+      "properties": {
+        "observed_traces": { "$ref": "#/$defs/Count" },
+        "runtime_failed_traces": { "$ref": "#/$defs/Count" },
+        "flagged_traces": { "$ref": "#/$defs/Count" },
+        "analyzed_flagged_traces": { "$ref": "#/$defs/Count" },
+        "abstained_traces": { "$ref": "#/$defs/Count" },
+        "abstention_rate": { "$ref": "#/$defs/Rate" }
+      }
+    },
+    "StageLatency": {
+      "type": "object",
+      "required": ["stage", "sample_count", "avg_ms"],
+      "properties": {
+        "stage": { "$ref": "#/$defs/Stage" },
+        "sample_count": { "type": "integer", "minimum": 1 },
+        "avg_ms": { "$ref": "#/$defs/Milliseconds" }
+      }
+    },
+    "Dashboard": {
+      "type": "object",
+      "required": ["window", "coverage", "totals", "apps", "latency_bottlenecks", "primary_category_counts"],
+      "properties": {
+        "window": { "$ref": "#/$defs/Window" },
+        "coverage": { "enum": ["all_reported", "sampled", "unknown"] },
+        "totals": { "$ref": "#/$defs/HealthCounts" },
+        "apps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["app_id", "service_name", "counts", "latency_bottlenecks"],
+            "properties": {
+              "app_id": { "$ref": "#/$defs/Id" },
+              "service_name": { "type": "string" },
+              "counts": { "$ref": "#/$defs/HealthCounts" },
+              "latency_bottlenecks": { "type": "array", "items": { "$ref": "#/$defs/StageLatency" } }
+            }
+          }
+        },
+        "latency_bottlenecks": { "type": "array", "items": { "$ref": "#/$defs/StageLatency" } },
+        "primary_category_counts": {
+          "type": "object",
+          "required": ["FP1", "FP2", "FP3", "FP4", "FP5", "FP6", "FP7"],
+          "propertyNames": { "$ref": "#/$defs/Category" },
+          "additionalProperties": { "$ref": "#/$defs/Count" }
+        }
+      }
+    },
+    "Audit": {
+      "type": "object",
+      "required": ["tool_version", "git_sha", "dirty_worktree", "engine_source_sha256", "config_fingerprint", "judge"],
+      "properties": {
+        "tool_version": { "type": "string" },
+        "git_sha": { "type": ["string", "null"], "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+        "dirty_worktree": { "type": ["boolean", "null"] },
+        "engine_source_sha256": { "anyOf": [{ "$ref": "#/$defs/Sha256" }, { "type": "null" }] },
+        "config_fingerprint": { "type": "string" },
+        "judge": {
+          "type": "object",
+          "required": ["provider", "model", "model_version", "temperature", "prompt_version", "prompt_sha256", "output_schema_sha256"],
+          "properties": {
+            "provider": { "type": "string" },
+            "model": { "type": "string" },
+            "model_version": { "type": ["string", "null"] },
+            "temperature": { "type": "number", "minimum": 0 },
+            "prompt_version": { "type": "string" },
+            "prompt_sha256": { "$ref": "#/$defs/Sha256" },
+            "output_schema_sha256": { "$ref": "#/$defs/Sha256" },
+            "config": { "type": "object", "description": "Optional sanitized effective judge settings." }
+          }
+        }
+      }
+    },
+    "BenchmarkReport": {
+      "type": "object",
+      "required": ["benchmark_id", "dataset", "created_at", "audit", "evaluated", "abstained", "accuracy_overall", "accuracy_when_answered", "matrices", "per_label_metrics"],
+      "properties": {
+        "benchmark_id": { "$ref": "#/$defs/Id" },
+        "dataset": {
+          "type": "object",
+          "required": ["name", "version", "split"],
+          "properties": {
+            "name": { "type": "string" },
+            "version": { "type": "string" },
+            "split": { "type": "string", "description": "For example held_out or tuning." }
+          }
+        },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "audit": { "$ref": "#/$defs/Audit" },
+        "evaluated": { "$ref": "#/$defs/Count" },
+        "abstained": { "$ref": "#/$defs/Count" },
+        "accuracy_overall": { "$ref": "#/$defs/Rate" },
+        "accuracy_when_answered": { "$ref": "#/$defs/Rate" },
+        "matrices": { "type": "array", "items": { "$ref": "#/$defs/ConfusionMatrix" } },
+        "per_label_metrics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["axis", "label", "support", "precision", "recall"],
+            "properties": {
+              "axis": { "enum": ["stage", "category"] },
+              "label": { "anyOf": [{ "$ref": "#/$defs/Stage" }, { "$ref": "#/$defs/Category" }] },
+              "support": { "$ref": "#/$defs/Count" },
+              "precision": { "$ref": "#/$defs/Rate" },
+              "recall": { "$ref": "#/$defs/Rate" }
+            }
+          }
+        }
+      }
+    },
+    "BenchmarkList": {
+      "allOf": [{ "$ref": "#/$defs/Page" }],
+      "required": ["items"],
+      "properties": { "items": { "type": "array", "items": { "$ref": "#/$defs/BenchmarkReport" } } }
+    },
+    "ConfusionMatrix": {
+      "type": "object",
+      "required": ["axis", "actual_labels", "predicted_labels", "cells"],
+      "properties": {
+        "axis": { "enum": ["stage_set", "category_set"] },
+        "actual_labels": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/Id" } },
+        "predicted_labels": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/Id" },
+          "contains": { "const": "ABSTAIN" }
+        },
+        "cells": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["actual", "predicted", "count"],
+            "properties": {
+              "actual": { "$ref": "#/$defs/Id" },
+              "predicted": { "$ref": "#/$defs/Id" },
+              "count": { "$ref": "#/$defs/Count" }
+            }
+          }
+        }
+      }
+    },
+    "Execution": {
+      "type": "object",
+      "required": ["execution_id", "trace_id", "app_id", "environment", "started_at", "duration_ms", "status", "flagged", "diagnosis_state"],
+      "properties": {
+        "execution_id": { "$ref": "#/$defs/Id" },
+        "trace_id": { "type": ["string", "null"], "pattern": "^[0-9a-f]{32}$" },
+        "app_id": { "$ref": "#/$defs/Id" },
+        "environment": { "type": ["string", "null"] },
+        "started_at": { "$ref": "#/$defs/Timestamp" },
+        "duration_ms": { "anyOf": [{ "$ref": "#/$defs/Milliseconds" }, { "type": "null" }] },
+        "status": { "enum": ["completed", "failed"] },
+        "flagged": { "type": "boolean" },
+        "diagnosis_state": { "enum": ["not_requested", "queued", "running", "completed", "failed", "insufficient_evidence"] }
+      }
+    },
+    "ExecutionList": {
+      "allOf": [{ "$ref": "#/$defs/Page" }],
+      "required": ["items"],
+      "properties": { "items": { "type": "array", "items": { "$ref": "#/$defs/Execution" } } }
+    },
+    "Node": {
+      "type": "object",
+      "required": ["node_id", "stage", "label", "status", "duration_ms", "artifact_ids"],
+      "properties": {
+        "node_id": { "$ref": "#/$defs/Id" },
+        "stage": { "anyOf": [{ "$ref": "#/$defs/Stage" }, { "const": "other" }] },
+        "label": { "type": "string" },
+        "status": { "enum": ["completed", "failed", "not_used", "unknown"] },
+        "span_id": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+        "duration_ms": { "anyOf": [{ "$ref": "#/$defs/Milliseconds" }, { "type": "null" }] },
+        "tokens": {
+          "type": "object",
+          "minProperties": 1,
+          "properties": {
+            "input": { "$ref": "#/$defs/Count" },
+            "output": { "$ref": "#/$defs/Count" }
+          },
+          "additionalProperties": false
+        },
+        "artifact_ids": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/Id" } }
+      }
+    },
+    "Graph": {
+      "type": "object",
+      "required": ["nodes", "edges"],
+      "properties": {
+        "nodes": { "type": "array", "items": { "$ref": "#/$defs/Node" } },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["from", "to", "kind"],
+            "properties": {
+              "from": { "$ref": "#/$defs/Id" },
+              "to": { "$ref": "#/$defs/Id" },
+              "kind": { "enum": ["parent_span", "observed_dependency"] }
+            }
+          }
+        }
+      }
+    },
+    "Artifact": {
+      "type": "object",
+      "required": ["artifact_id", "kind", "availability"],
+      "properties": {
+        "artifact_id": { "$ref": "#/$defs/Id" },
+        "kind": { "enum": ["query", "input", "output", "chunks", "context", "prompt", "answer", "manifest", "inspection_note", "other"] },
+        "availability": { "enum": ["available", "redacted", "not_captured", "too_large"] },
+        "content": {}
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "availability": { "const": "available" } } },
+          "then": { "required": ["content"] },
+          "else": { "not": { "required": ["content"] } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "chunks" } } },
+          "then": { "properties": { "content": { "type": "array", "items": { "$ref": "#/$defs/Chunk" } } } }
+        }
+      ]
+    },
+    "Chunk": {
+      "type": "object",
+      "required": ["chunk_id", "rank"],
+      "properties": {
+        "chunk_id": { "$ref": "#/$defs/Id" },
+        "doc_id": { "$ref": "#/$defs/Id" },
+        "rank": { "type": "integer", "minimum": 1 },
+        "score": { "type": "number" },
+        "text": { "type": "string" }
+      }
+    },
+    "Citation": {
+      "type": "object",
+      "required": ["artifact_id", "quote"],
+      "properties": {
+        "artifact_id": { "$ref": "#/$defs/Id" },
+        "quote": { "type": ["string", "null"], "description": "Exact captured quote or null when withheld." }
+      }
+    },
+    "Verdict": {
+      "type": "object",
+      "required": ["status", "primary_stage", "category", "confidence", "contributing_stages", "unresolved_categories", "summary", "evidence_trail", "recommendations"],
+      "properties": {
+        "status": { "enum": ["diagnosed", "abstained", "no_failure"] },
+        "primary_stage": { "anyOf": [{ "$ref": "#/$defs/Stage" }, { "type": "null" }] },
+        "category": { "anyOf": [{ "$ref": "#/$defs/Category" }, { "type": "null" }] },
+        "confidence": { "$ref": "#/$defs/Rate" },
+        "contributing_stages": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/Stage" } },
+        "unresolved_categories": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/Category" } },
+        "summary": { "type": "string" },
+        "evidence_trail": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["stage", "category", "finding", "citations"],
+            "properties": {
+              "stage": { "$ref": "#/$defs/Stage" },
+              "category": { "$ref": "#/$defs/Category" },
+              "finding": { "type": "string" },
+              "citations": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/Citation" } }
+            }
+          }
+        },
+        "recommendations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["action", "origin", "related_artifact_ids"],
+            "properties": {
+              "action": { "type": "string" },
+              "origin": { "enum": ["rule", "judge", "human"] },
+              "related_artifact_ids": { "type": "array", "items": { "$ref": "#/$defs/Id" } }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "diagnosed" } } },
+          "then": {
+            "properties": {
+              "primary_stage": { "$ref": "#/$defs/Stage" },
+              "category": { "$ref": "#/$defs/Category" },
+              "confidence": { "type": "number" },
+              "evidence_trail": { "minItems": 1 }
+            }
+          },
+          "else": { "properties": { "primary_stage": { "type": "null" }, "category": { "type": "null" } } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "abstained" } } },
+          "then": { "properties": { "confidence": { "type": "null" } } }
+        }
+      ]
+    },
+    "WorkState": { "enum": ["queued", "running", "completed", "failed", "insufficient_evidence"] },
+    "DiagnosticRun": {
+      "type": "object",
+      "required": ["diagnostic_run_id", "execution_id", "source", "state", "created_at"],
+      "properties": {
+        "diagnostic_run_id": { "$ref": "#/$defs/Id" },
+        "execution_id": { "$ref": "#/$defs/Id" },
+        "source": { "enum": ["live", "replay"] },
+        "state": { "$ref": "#/$defs/WorkState" },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "finished_at": { "$ref": "#/$defs/Timestamp" },
+        "audit": { "$ref": "#/$defs/Audit" },
+        "input_fingerprint": { "$ref": "#/$defs/Sha256" },
+        "verdict": { "$ref": "#/$defs/Verdict" },
+        "error": { "$ref": "#/$defs/Error" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "completed" } } },
+          "then": { "required": ["finished_at", "audit", "verdict"] },
+          "else": { "not": { "required": ["verdict"] } }
+        },
+        {
+          "if": { "properties": { "state": { "enum": ["failed", "insufficient_evidence"] } } },
+          "then": { "required": ["finished_at", "error"] }
+        }
+      ]
+    },
+    "RunList": {
+      "allOf": [{ "$ref": "#/$defs/Page" }],
+      "required": ["items"],
+      "properties": { "items": { "type": "array", "items": { "$ref": "#/$defs/DiagnosticRun" } } }
+    },
+    "ReplayCapabilities": {
+      "type": "object",
+      "required": ["judge_only", "pipeline_what_if"],
+      "properties": {
+        "judge_only": { "$ref": "#/$defs/ReplayCapability" },
+        "pipeline_what_if": { "$ref": "#/$defs/ReplayCapability" }
+      }
+    },
+    "ReplayCapability": {
+      "type": "object",
+      "required": ["available", "reason", "supported_overrides"],
+      "properties": {
+        "available": { "type": "boolean" },
+        "reason": { "type": ["string", "null"] },
+        "supported_overrides": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["judge_prompt_config_id", "top_k", "prompt_template_id", "context_limit_tokens"] }
+        },
+        "options": {
+          "type": "object",
+          "properties": {
+            "judge_prompt_config_id": { "$ref": "#/$defs/ReplayChoices" },
+            "prompt_template_id": { "$ref": "#/$defs/ReplayChoices" }
+          }
+        }
+      }
+    },
+    "ReplayChoices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "label"],
+        "properties": {
+          "id": { "$ref": "#/$defs/Id" },
+          "label": { "type": "string" }
+        }
+      }
+    },
+    "TraceDetail": {
+      "type": "object",
+      "required": ["execution", "graph", "latest_live_diagnosis", "replay_capabilities"],
+      "properties": {
+        "execution": { "$ref": "#/$defs/Execution" },
+        "graph": { "$ref": "#/$defs/Graph" },
+        "execution_artifact_ids": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/Id" } },
+        "latest_live_diagnosis": {
+          "anyOf": [
+            { "$ref": "#/$defs/DiagnosticRun", "properties": { "source": { "const": "live" } } },
+            { "type": "null" }
+          ]
+        },
+        "replay_capabilities": { "$ref": "#/$defs/ReplayCapabilities" }
+      }
+    },
+    "ReplayRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "overrides"],
+      "properties": { "mode": { "enum": ["judge_only", "pipeline_what_if"] }, "overrides": { "type": "object" } },
+      "if": { "properties": { "mode": { "const": "judge_only" } } },
+      "then": {
+        "properties": {
+          "overrides": {
+            "additionalProperties": false,
+            "properties": { "judge_prompt_config_id": { "$ref": "#/$defs/Id" } }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "overrides": {
+            "additionalProperties": false,
+            "minProperties": 1,
+            "properties": {
+              "top_k": { "type": "integer", "minimum": 1 },
+              "prompt_template_id": { "$ref": "#/$defs/Id" },
+              "context_limit_tokens": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    },
+    "ReplayJob": {
+      "type": "object",
+      "required": ["replay_id", "source_execution_id", "request", "state", "created_at"],
+      "properties": {
+        "replay_id": { "$ref": "#/$defs/Id" },
+        "source_execution_id": { "$ref": "#/$defs/Id" },
+        "request": { "$ref": "#/$defs/ReplayRequest" },
+        "state": { "$ref": "#/$defs/WorkState" },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "result_execution_id": { "$ref": "#/$defs/Id" },
+        "diagnostic_run_id": { "$ref": "#/$defs/Id" },
+        "finished_at": { "$ref": "#/$defs/Timestamp" },
+        "error": { "$ref": "#/$defs/Error" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "completed" } } },
+          "then": { "required": ["finished_at", "result_execution_id", "diagnostic_run_id"] }
+        },
+        {
+          "if": { "properties": { "state": { "enum": ["failed", "insufficient_evidence"] } } },
+          "then": { "required": ["finished_at", "error"] }
+        }
+      ]
+    }
+  }
+}
