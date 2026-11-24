@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -16,15 +17,86 @@ import yaml
 STAGES = {
     "missing_content": "corpus",
     "missed_top_ranked": "retrieval",
+    "not_in_context": "context_assembly",
     "not_extracted": "generation",
+    "wrong_format": "generation",
+    "incorrect_specificity": "generation",
     "incomplete_answer": "generation",
 }
 OPTIONS = {
     "missing_content": set(),
-    "missed_top_ranked": {"noise", "repeat"},
-    "not_extracted": {"prefix", "suffix"},
-    "incomplete_answer": {"keep_fraction", "keep_chars"},
+    "missed_top_ranked": {"noise", "repeat", "mode", "evidence_quote"},
+    "not_in_context": {"evidence_quote"},
+    "not_extracted": {"prefix", "suffix", "mode", "response", "evidence_quote"},
+    "wrong_format": {"instruction", "response", "evidence_quote"},
+    "incorrect_specificity": {"instruction", "response", "evidence_quote"},
+    "incomplete_answer": {
+        "keep_fraction",
+        "keep_chars",
+        "mode",
+        "response",
+        "query",
+        "expected_answer",
+        "evidence_quote",
+    },
 }
+
+RUNTIME_FAILURES = {"not_in_context", "wrong_format", "incorrect_specificity"}
+OPTIONAL_RUNTIME_FAILURES = {"missed_top_ranked", "not_extracted", "incomplete_answer"}
+EVIDENCE_REQUIRED = {
+    "missing_content": "Absence from a complete, explicitly scoped corpus snapshot.",
+    "missed_top_ranked": (
+        "Relevant indexed evidence below the cutoff, or before/after reranking loss."
+    ),
+    "not_in_context": "Upstream retrieved evidence absent from the exact generation context.",
+    "not_extracted": "Required fact in exact generation context but unused in the answer.",
+    "wrong_format": "Explicit format constraint and a response that violates it.",
+    "incorrect_specificity": (
+        "Unambiguous audience, scope or detail requirement and a too vague/granular response."
+    ),
+    "incomplete_answer": "Requested parts, supporting context facts and answer omissions.",
+}
+
+
+def apply_runtime_fault(
+    plan: dict[str, Any],
+    *,
+    context: str,
+    instruction: str | None = None,
+    response: str | None = None,
+) -> dict[str, Any]:
+    """Apply a planned fault at its pipeline boundary and return observed evidence.
+
+    Pass the exact assembled generation context (and actual instruction/response
+    for generation faults). The caller must forward the returned values to the
+    next boundary and retain this record. This helper does not call a model.
+    """
+    failure = plan["failure_type"]
+    if failure not in RUNTIME_FAILURES | {"not_extracted", "incomplete_answer"}:
+        raise ValueError("Unsupported runtime failure")
+    evidence = _text(plan["evidence_text"], "evidence_text")
+    if evidence not in context:
+        raise ValueError("Target evidence must be present at the upstream context boundary")
+    result = {
+        "failure_type": failure,
+        "upstream_context": context,
+        "generation_context": context,
+        "instruction": instruction,
+        "original_response": response,
+        "response": response,
+        "target_location": plan["target_location"],
+        "evidence_text": evidence,
+    }
+    if failure == "not_in_context":
+        result["generation_context"] = context.replace(evidence, "")
+        if evidence in result["generation_context"]:
+            raise ValueError("Target evidence remains in generation context")
+    else:
+        if "instruction" in plan and instruction != plan["instruction"]:
+            raise ValueError("Actual instruction must match the manifest constraint exactly")
+        _text(response, "original response")
+        result["response"] = plan["response"]
+    return result
 
 
 def _read_json(path: Path) -> Any:
@@ -93,11 +165,19 @@ class FaultInjectionEngine:
     """
 
     def __init__(
-        self, base_corpus_dir: str | Path, output_dir: str | Path, manifest_path: str | Path
+        self,
+        base_corpus_dir: str | Path,
+        output_dir: str | Path,
+        manifest_path: str | Path,
+        *,
+        benchmark_scope: bool = False,
+        link_corpus: bool = False,
     ):
         self.base_corpus_dir = Path(base_corpus_dir).expanduser().resolve()
         self.output_dir = Path(output_dir).expanduser().resolve()
         self.manifest_path = Path(manifest_path).expanduser().resolve()
+        self.benchmark_scope = benchmark_scope
+        self.link_corpus = link_corpus
 
     def load_manifest(self) -> dict[str, Any]:
         manifest = yaml.safe_load(self.manifest_path.read_text(encoding="utf-8"))
@@ -112,12 +192,22 @@ class FaultInjectionEngine:
     def _plan_case(self, case: dict, queries: dict, qrels: dict, answers: dict) -> tuple:
         if not isinstance(case, dict) or not {"query_id", "failure_type"} <= case.keys():
             raise ValueError("Each test case requires query_id and failure_type")
-        if case.keys() - {"query_id", "failure_type", "injection_config"}:
-            raise ValueError("Unknown test case keys; use query_id, failure_type, injection_config")
+        if case.keys() - {
+            "query_id", "failure_type", "injection_config", "retrieval_top_k", "source_document"
+        }:
+            raise ValueError("Unknown test case keys")
+        if "retrieval_top_k" in case and (
+            type(case["retrieval_top_k"]) is not int or case["retrieval_top_k"] < 1
+        ):
+            raise ValueError("retrieval_top_k must be a positive integer")
         query_id = _text(case["query_id"], "query_id")
         failure = _text(case["failure_type"], "failure_type")
         if failure not in STAGES:
             raise ValueError(f"Unsupported failure_type: {failure}")
+        if "source_document" in case:
+            if failure != "missing_content":
+                raise ValueError("source_document is supported only for missing_content")
+            _text(case["source_document"], "source_document")
         if query_id not in queries or query_id not in qrels or query_id not in answers:
             raise ValueError(
                 f"Query {query_id} must exist in queries.json, qrels.json and answers.json"
@@ -132,6 +222,21 @@ class FaultInjectionEngine:
         unknown = config.keys() - target_options - OPTIONS[failure]
         if unknown:
             raise ValueError(f"Unsupported injection options for {failure}: {sorted(unknown)}")
+        mode = config.get("mode", "corpus")
+        if mode not in ("runtime", "corpus"):
+            raise ValueError("mode must be runtime or corpus")
+        runtime_case = failure in RUNTIME_FAILURES or mode == "runtime"
+        if failure in OPTIONAL_RUNTIME_FAILURES:
+            corpus_options = {"noise", "repeat", "prefix", "suffix", "keep_fraction", "keep_chars"}
+            invalid = (
+                corpus_options
+                if runtime_case
+                else {"evidence_quote", "response", "query", "expected_answer"}
+            )
+            if invalid & config.keys():
+                raise ValueError(
+                    f"Options {sorted(invalid & config.keys())} conflict with {mode} mode"
+                )
         filename = _text(config.get("target_file", f"{relevant['doc_id']}.json"), "target_file")
         # The existing loader reads a flat directory of paper JSON files.
         if Path(filename).name != filename or Path(filename).suffix != ".json":
@@ -141,7 +246,27 @@ class FaultInjectionEngine:
             raise ValueError(f"Target must be an existing, regular corpus file: {filename}")
         original = path.read_bytes()
         paper = json.loads(original)
+        if self.benchmark_scope and failure != "missing_content":
+            if not runtime_case:
+                raise ValueError(f"The benchmark requires a runtime plan for {failure}")
+            quote = _text(config.get("evidence_quote"), "benchmark evidence_quote")
+            parent, key, field_location = self._target(paper, config, relevant)
+            if quote not in _text(parent[key], "target field"):
+                raise ValueError(f"evidence_quote must occur verbatim in {filename}")
+            paper = {"id": paper.get("id") or path.stem, "title": paper.get("title") or path.stem}
+            if field_location["field"] == "abstract":
+                paper["abstract"] = quote
+            else:
+                section = {"section_id": field_location["section_id"]}
+                if field_location["field"] == "table":
+                    section["tables"] = {key: quote}
+                else:
+                    section["text"] = quote
+                paper["sections"] = [section]
+            original = _json_bytes(paper)
         location: dict[str, Any] = {"file": filename, "doc_id": paper.get("id", path.stem)}
+        if case.get("source_document", location["doc_id"]) != location["doc_id"]:
+            raise ValueError("source_document must identify the case's clean source document")
         if failure == "missing_content":
             modified = None
             mutation = {"operation": "delete_document", "edits": []}
@@ -150,16 +275,44 @@ class FaultInjectionEngine:
             parent, key, field_location = self._target(paper, config, relevant)
             location.update(field_location)
             value = _text(parent[key], "target field")
-            changed, operation, edits, reason = _mutate(value, failure, config)
-            parent[key] = changed
-            modified = _json_bytes(paper)
-            mutation = {"operation": operation, "edits": edits}
-            cause = f"{reason} at {filename}#{location['json_pointer']}."
+            if runtime_case:
+                modified = original
+                evidence = _text(config.get("evidence_quote", value), "evidence_quote")
+                if evidence not in value:
+                    raise ValueError(f"evidence_quote must occur verbatim in {filename}")
+                runtime = {
+                    "failure_type": failure,
+                    "target_location": location,
+                    "evidence_text": evidence,
+                }
+                if failure in {"wrong_format", "incorrect_specificity"}:
+                    runtime["instruction"] = _text(config.get("instruction"), "instruction")
+                if failure not in {"not_in_context", "missed_top_ranked"}:
+                    runtime["response"] = _text(config.get("response"), "response")
+                operation = {
+                    "not_in_context": "drop_context",
+                    "missed_top_ranked": "demote_retrieval",
+                }.get(failure, "override_response")
+                mutation = {
+                    "operation": operation,
+                    "edits": [],
+                    "runtime_plan": runtime,
+                }
+                cause = f"Planned {mutation['operation']} at {STAGES[failure]} for {filename}."
+            else:
+                changed, operation, edits, reason = _mutate(value, failure, config)
+                parent[key] = changed
+                modified = _json_bytes(paper)
+                mutation = {"operation": operation, "edits": edits}
+                cause = f"{reason} at {filename}#{location['json_pointer']}."
         entry = {
-            "query": queries[query_id]["query"],
-            "expected_answer": answers[query_id],
+            "query": _text(config.get("query", queries[query_id]["query"]), "query"),
+            "expected_answer": config.get("expected_answer", answers[query_id]),
             "relevance_target": relevant,
             "failure_type": failure,
+            "attribution_status": "unverified",
+            "evidence_required": EVIDENCE_REQUIRED[failure],
+            "injection_status": "planned" if runtime_case else "applied",
             "expected_failure_stage": STAGES[failure],
             "root_cause": cause,
             "target_location": location,
@@ -215,17 +368,10 @@ class FaultInjectionEngine:
             {**location, "table_id": table_id, "json_pointer": f"{pointer}/tables/{escaped}"},
         )
 
-    def run_injection_suite(self) -> dict[str, Any]:
+    def plan_injections(self) -> tuple[dict[str, Any], list[tuple[str, bytes | None]]]:
+        """Validate the manifest and return its registry and file mutation plan."""
         if not self.base_corpus_dir.is_dir():
             raise ValueError(f"Clean corpus directory not found: {self.base_corpus_dir}")
-        if self.output_dir.is_relative_to(
-            self.base_corpus_dir
-        ) or self.base_corpus_dir.is_relative_to(self.output_dir):
-            raise ValueError("Output and clean corpus directories must not overlap")
-        if self.output_dir.exists():
-            raise FileExistsError(
-                f"Output already exists; choose a new --output-dir: {self.output_dir}"
-            )
         manifest = self.load_manifest()
         dataset = self.base_corpus_dir.parent
         queries = _read_json(dataset / "queries.json")
@@ -248,20 +394,47 @@ class FaultInjectionEngine:
             targets.add(filename)
             registry["test_cases"][query_id] = entry
             plans.append((filename, modified))
+        return registry, plans
+
+    def run_injection_suite(self) -> dict[str, Any]:
+        if self.output_dir.is_relative_to(
+            self.base_corpus_dir
+        ) or self.base_corpus_dir.is_relative_to(self.output_dir):
+            raise ValueError("Output and clean corpus directories must not overlap")
+        if self.output_dir.exists():
+            raise FileExistsError(
+                f"Output already exists; choose a new --output-dir: {self.output_dir}"
+            )
+        registry, plans = self.plan_injections()
 
         self.output_dir.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(
             prefix=".fault-injection-", dir=self.output_dir.parent
         ) as tmp:
             staged = Path(tmp) / "run"
-            shutil.copytree(self.base_corpus_dir, staged / "corpus")
+            corpus = staged / "corpus"
+            if self.benchmark_scope:
+                corpus.mkdir(parents=True)
+            elif self.link_corpus:
+                shutil.copytree(self.base_corpus_dir, corpus, copy_function=os.link)
+            else:
+                shutil.copytree(self.base_corpus_dir, corpus)
             for filename, modified in plans:
-                target = staged / "corpus" / filename
+                target = corpus / filename
                 if modified is None:
-                    target.unlink()
+                    if not self.benchmark_scope:
+                        target.unlink()
                 else:
+                    if self.link_corpus:
+                        target.unlink()
                     target.write_bytes(modified)
             (staged / "ground_truth.json").write_bytes(_json_bytes(registry))
+            runtime_plans = {
+                query_id: entry["mutation"]["runtime_plan"]
+                for query_id, entry in registry["test_cases"].items()
+                if "runtime_plan" in entry["mutation"]
+            }
+            (staged / "runtime_faults.json").write_bytes(_json_bytes(runtime_plans))
             staged.rename(self.output_dir)
         return registry
 
@@ -280,9 +453,12 @@ def main(argv: list[str] | None = None) -> None:
     except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError) as error:
         print(f"Error: {error}", file=sys.stderr)
         raise SystemExit(1) from error
-    print(f"Applied {len(registry['test_cases'])} fault injections.")
+    applied = sum(e["injection_status"] == "applied" for e in registry["test_cases"].values())
+    print(f"Applied {applied} fault injections.")
+    print(f"Planned {len(registry['test_cases']) - applied} runtime fault injections.")
     print(f"Corrupted corpus: {engine.output_dir / 'corpus'}")
     print(f"Ground truth: {engine.output_dir / 'ground_truth.json'}")
+    print(f"Runtime plans: {engine.output_dir / 'runtime_faults.json'}")
 
 
 if __name__ == "__main__":

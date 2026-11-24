@@ -29,6 +29,22 @@ class MemoryCollection:
     def count(self):
         return len(self.rows)
 
+    def get(self, where=None, include=None, limit=None, offset=0):
+        rows = list(self.rows.items())
+        if where:
+            rows = [
+                row
+                for row in rows
+                if all(row[1][1].get(key) == value for key, value in where.items())
+            ]
+        rows = rows[offset : offset + limit if limit is not None else None]
+        return {
+            "ids": [key for key, _ in rows],
+            "documents": [value[0] for _, value in rows],
+            "metadatas": [value[1] for _, value in rows],
+            "embeddings": [value[2] for _, value in rows],
+        }
+
     def query(self, n_results, **kwargs):
         rows = list(self.rows.items())[:n_results]
         return {

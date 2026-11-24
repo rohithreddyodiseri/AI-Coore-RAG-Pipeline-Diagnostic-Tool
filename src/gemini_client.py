@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import stat
 import threading
 import time
 from dataclasses import dataclass
@@ -12,6 +13,17 @@ from typing import Any
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 _PACING_LOCK = threading.Lock()
 _LAST_REQUEST: float | None = None
+
+
+def _load_environment() -> None:
+    from dotenv import find_dotenv, load_dotenv
+
+    env_file = find_dotenv(usecwd=True)
+    if env_file:
+        flags = getattr(os.stat(env_file), "st_flags", 0)
+        if flags & getattr(stat, "SF_DATALESS", 0):
+            return
+        load_dotenv(env_file, override=False)
 
 
 @dataclass(frozen=True)
@@ -27,21 +39,20 @@ class GeminiAPIError(RuntimeError):
 
 
 class GeminiInferenceEngine:
-    VERSION = 1
+    VERSION = 2
 
     def __init__(
         self,
         model_name: str = DEFAULT_MODEL,
         client=None,
         min_request_interval_seconds: float | None = None,
+        request_timeout_seconds: float | None = None,
     ):
         if not isinstance(model_name, str) or not model_name.strip():
             raise ValueError("Gemini model_name must be a nonempty string")
         self.model_name, self._client = model_name, client
         if min_request_interval_seconds is None:
-            from rag_pipeline.config import load_environment
-
-            load_environment()
+            _load_environment()
             min_request_interval_seconds = float(
                 os.getenv("GEMINI_MIN_REQUEST_INTERVAL_SECONDS", "2")
             )
@@ -52,18 +63,38 @@ class GeminiInferenceEngine:
         ):
             raise ValueError("GEMINI_MIN_REQUEST_INTERVAL_SECONDS must be between 0 and 60")
         self.min_request_interval_seconds = min_request_interval_seconds
+        if request_timeout_seconds is None:
+            request_timeout_seconds = float(
+                os.getenv("GEMINI_REQUEST_TIMEOUT_SECONDS", "120")
+            )
+        if (
+            type(request_timeout_seconds) not in (int, float)
+            or not math.isfinite(request_timeout_seconds)
+            or not 1 <= request_timeout_seconds <= 600
+        ):
+            raise ValueError("GEMINI_REQUEST_TIMEOUT_SECONDS must be between 1 and 600")
+        self.request_timeout_seconds = request_timeout_seconds
 
     def _get_client(self):
         if self._client is None:
-            from rag_pipeline.config import load_environment
-
-            load_environment()
+            _load_environment()
             key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
             if not key:
                 raise ValueError("Set GEMINI_API_KEY in your environment or .env file")
             from google import genai
+            from google.genai import types
 
-            self._client = genai.Client(api_key=key, vertexai=False)
+            # Keep retries in this engine so one request cannot multiply the SDK's
+            # default five attempts by our three attempts. The explicit deadline also
+            # prevents a stalled provider connection from hanging a benchmark case.
+            self._client = genai.Client(
+                api_key=key,
+                vertexai=False,
+                http_options=types.HttpOptions(
+                    timeout=int(self.request_timeout_seconds * 1000),
+                    retry_options=types.HttpRetryOptions(attempts=1),
+                ),
+            )
         return self._client
 
     def _pace(self):
@@ -78,13 +109,23 @@ class GeminiInferenceEngine:
 
     def _request(self, prompt: str, config: dict[str, Any]) -> InferenceResult:
         client = self._get_client()
-        self._pace()
         try:
-            response = client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=config,
-            )
+            for attempt in range(3):
+                self._pace()
+                try:
+                    response = client.models.generate_content(
+                        model=self.model_name,
+                        contents=prompt,
+                        config=config,
+                    )
+                    break
+                except Exception as error:
+                    if (
+                        getattr(error, "code", None) not in (429, 500, 502, 503, 504)
+                        or attempt == 2
+                    ):
+                        raise
+                    time.sleep(2 ** (attempt + 1))
         except Exception as error:
             code = getattr(error, "code", None)
             # API exception messages may include request URLs, headers, or credentials.

@@ -31,7 +31,8 @@ def _parser():
         prog="rag-diagnose",
         description=__doc__,
         epilog="Saved telemetry: rag-diagnose ingest --trace PATH; "
-        "flagged-run consumer: rag-diagnose watch --trace-dir DIR",
+        "flagged-run consumer: rag-diagnose watch --trace-dir DIR; "
+        "benchmark: rag-diagnose fault-test-runner --output-dir DIR",
     )
     parser.add_argument("query", help="Query to execute on the connected RAG pipeline")
     parser.add_argument(
@@ -112,6 +113,10 @@ def _ingestion_main(argv):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "fault-test-runner":
+        from rag_diagnostic.fault_test_runner import main as benchmark_main
+
+        return benchmark_main(argv[1:])
     if argv and argv[0] in ("ingest", "watch", "flag"):
         return _ingestion_main(argv)
     args = _parser().parse_args(argv)

@@ -141,7 +141,9 @@ def test_missing_context_cannot_blame_extraction(make_engine, trace, code):
     assert "context" in verdict.evaluations[int(code[-1]) - 1]["rationale"]
 
 
-@pytest.mark.parametrize("mutation", ["quote", "artifact", "stage", "confidence", "contributor"])
+@pytest.mark.parametrize(
+    "mutation", ["quote", "artifact", "stage", "confidence", "contributor", "span"]
+)
 def test_invalid_evidence_never_becomes_a_verdict(make_engine, trace, mutation):
     reply = report(trace, [("FP5", "generation", ["query", "generation.answer"])])
     row = reply["evaluations"][4]
@@ -153,6 +155,8 @@ def test_invalid_evidence_never_becomes_a_verdict(make_engine, trace, mutation):
         row["stage"] = "retrieval"
     elif mutation == "confidence":
         row["confidence"] = 0.69
+    elif mutation == "span":
+        row["evidence"][0] = {"artifact_id": "query", "span_id": -1}
     else:
         row["contributing_stages"] = [
             {
@@ -163,6 +167,71 @@ def test_invalid_evidence_never_becomes_a_verdict(make_engine, trace, mutation):
         ]
     engine, _ = make_engine(reply)
     assert engine.diagnose(trace).status == "abstained"
+
+
+def test_judge_span_citations_preserve_latex(make_engine, trace):
+    fact = r"The estimate requires the uncertainty set $\mathcal{U}$."
+    context = "Preamble. " * 75 + fact
+    trace["stages"]["context_assembly"]["output_data"]["text"] = context
+    claim = ("FP4", "generation", ["context.text", "generation.answer"])
+
+    def reply(request):
+        artifacts = json.loads(request["contents"])["artifacts"]
+        spans = artifacts["context.text"]["spans"]
+        assert "".join(spans) == context
+        span_id = next(index for index, span in enumerate(spans) if fact in span)
+        result = report(trace, [claim])
+        result["evaluations"][3]["evidence"] = [
+            {"artifact_id": "context.text", "span_id": span_id},
+            {"artifact_id": "generation.answer", "span_id": 0},
+        ]
+        return result
+
+    engine, client = make_engine(reply)
+    verdict = engine.diagnose(trace)
+    assert client.calls == 1
+    assert verdict.failure_category == "FP4"
+    assert fact in verdict.evidence[0]["quote"]
+    assert verdict.evidence[0]["quote"] in context
+
+
+@pytest.mark.parametrize("use_reranker", [False, True])
+def test_context_omissions_are_observed_and_validated(make_engine, trace, use_reranker):
+    upstream = "reranking" if use_reranker else "retrieval"
+    if not use_reranker:
+        trace["stages"].pop("reranking")
+    trace["stages"]["context_assembly"]["output_data"] = {"text": "Unrelated", "chunk_ids": []}
+    trace["deep_retrieval"] = [{"chunk_id": "deep-only", "text": "Deep result", "rank": 2}]
+    key = f"{upstream}.chunk.0"
+    reply = report(trace, [("FP3", "context_assembly", [key, "context.omissions"])])
+    reply["evaluations"][2]["evidence"] = [
+        {"artifact_id": key, "span_id": 0},
+        {"artifact_id": "context.omissions", "span_id": 0},
+    ]
+
+    def judge_reply(request):
+        if "citation_repair" in json.loads(request["contents"]):
+            return reply
+        rejected = deepcopy(reply)
+        row = rejected["evaluations"][2]
+        row["evidence"].pop(0)
+        row["contributing_stages"] = [{
+            "stage": "context_assembly", "rationale": "Same stage",
+            "evidence": row["evidence"],
+        }]
+        return rejected
+
+    engine, client = make_engine(judge_reply)
+    verdict = engine.diagnose(trace)
+    assert client.calls == 2
+    observed = json.loads(client.requests[0]["contents"])["artifacts"]["context.omissions"]
+    assert observed["input_boundary"] == upstream
+    assert observed["omitted_chunks"] == [{"artifact_id": key, "chunk_id": "d:0", "rank": 1}]
+    assert verdict.failure_category == "FP3"
+
+    trace["stages"]["context_assembly"]["output_data"]["chunk_ids"] = ["d:0"]
+    assert engine.diagnose(trace).status == "abstained"
+    assert client.calls == 3
 
 
 def test_confident_none_requires_complete_matrix(make_engine, trace):

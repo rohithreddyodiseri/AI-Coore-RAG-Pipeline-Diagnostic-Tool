@@ -170,6 +170,9 @@ In-progress records and partial trailing writes are retried. Multiple runs in a
 file are processed independently; manual ingestion selects one using `--run-id`.
 –
 
+See [Diagnostic OTLP server](otlp-server.md) to start the receiver, register an
+app, and obtain exporter settings.
+
 ## OpenTelemetry producer contract v1
 
 The application exports standard OTLP spans with an OpenTelemetry SDK. The

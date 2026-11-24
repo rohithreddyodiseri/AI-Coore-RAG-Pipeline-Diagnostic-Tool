@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from gemini_client import GeminiAPIError
 from rag_diagnostic.config import DiagnosticConfig
-from rag_diagnostic.judge import Judge, build_judge
+from rag_diagnostic.judge import Judge, build_judge, citation_spans
 from rag_diagnostic.runlog import RunRecord, append_jsonl
 from rag_diagnostic.taxonomy import BY_CODE, CATEGORIES, PAPER_URL, STAGES
 
@@ -57,6 +59,7 @@ def trace_artifacts(trace: dict[str, Any]) -> dict[str, dict[str, Any]]:
     ):
         raise ValueError("trace.query must be a nonempty string")
     artifacts = {}
+    observed_id_boundaries = set()
 
     def add(key, stage, kind, text, **metadata):
         if not isinstance(text, str):
@@ -90,6 +93,12 @@ def trace_artifacts(trace: dict[str, Any]) -> dict[str, dict[str, Any]]:
             )
         if cutoff is not None and (type(cutoff) is not int or cutoff < 1):
             raise ValueError("pipeline cutoffs must be positive integers")
+        if len(ids) == len(set(ids)) and all(
+            isinstance(item.get("chunk_id", item.get("id")), str)
+            and item.get("chunk_id", item.get("id"))
+            for item in output
+        ):
+            observed_id_boundaries.add(prefix)
         manifest(f"{prefix}.manifest", stage, chunk_ids=ids, count=len(ids), cutoff=cutoff)
 
     add("query", "generation", "query", trace["query"])
@@ -113,6 +122,30 @@ def trace_artifacts(trace: dict[str, Any]) -> dict[str, dict[str, Any]]:
         ids = context.get("chunk_ids") if isinstance(context, dict) else None
         add("context.text", "context_assembly", "context", text)
         manifest("context.manifest", "context_assembly", characters=len(text), chunk_ids=ids)
+        upstream = "reranking" if "reranking.manifest" in artifacts else "retrieval"
+        reranking_status = stages.get("reranking", {}).get("status")
+        if (
+            isinstance(ids, (list, tuple))
+            and all(isinstance(chunk_id, str) and chunk_id for chunk_id in ids)
+            and upstream in observed_id_boundaries
+            and (
+                upstream == "reranking"
+                or (
+                    reranking_status in (None, "not_used")
+                    and trace.get("reranker_used") is not True
+                )
+            )
+        ):
+            included = set(ids)
+            omitted = [
+                {"artifact_id": key, "chunk_id": chunk["chunk_id"], "rank": chunk["rank"]}
+                for key, chunk in artifacts.items()
+                if key.startswith(f"{upstream}.chunk.") and chunk["chunk_id"] not in included
+            ]
+            manifest(
+                "context.omissions", "context_assembly",
+                input_boundary=upstream, omitted_chunks=omitted,
+            )
     answer_key = "final_answer" if "final_answer" in trace else "answer"
     if answer_key in trace:
         add("generation.answer", "generation", "answer", trace[answer_key])
@@ -157,6 +190,21 @@ def trace_artifacts(trace: dict[str, Any]) -> dict[str, dict[str, Any]]:
             selection=corpus.get("selection", "all supplied documents"),
             truncated_document_ids=corpus.get("truncated_document_ids", []),
         )
+        source = corpus.get("source_document")
+        if (
+            isinstance(source, str)
+            and source
+            and trace["query"].startswith(f"Use only source document {source}. ")
+            and complete
+            and corpus.get("total_documents", len(doc_ids)) == len(doc_ids)
+            and not corpus.get("truncated_document_ids")
+            and not doc_ids
+        ):
+            manifest(
+                "corpus.source_membership", "corpus",
+                source_document=source, scope=corpus["scope"], snapshot_id=corpus["snapshot_id"],
+                document_count=0,
+            )
     for name in ("retrieval", "reranking", "context_assembly", "generation"):
         stage = stages.get(name, {})
         if "input_data" in stage:
@@ -315,19 +363,32 @@ def _unknown(code, reason):
 def _citations(evidence, artifacts):
     if not isinstance(evidence, list) or not evidence:
         raise ValueError("non-unknown evaluations require artifact citations")
+    resolved = []
     for citation in evidence:
-        if not isinstance(citation, dict) or set(citation) != {"artifact_id", "quote"}:
+        if not isinstance(citation, dict) or set(citation) not in (
+            {"artifact_id", "quote"}, {"artifact_id", "span_id"},
+        ):
             raise ValueError("invalid citation schema")
-        artifact_id, quote = citation["artifact_id"], citation["quote"]
+        artifact_id = citation["artifact_id"]
+        if not isinstance(artifact_id, str) or artifact_id not in artifacts:
+            raise ValueError("citation must reference a known artifact")
+        artifact = artifacts[artifact_id]
+        if "span_id" in citation:
+            span_id = citation["span_id"]
+            spans = citation_spans(artifact)
+            if type(span_id) is not int or not 0 <= span_id < len(spans):
+                raise ValueError("citation must reference an existing span of its artifact")
+            quote = spans[span_id]
+        else:
+            quote = citation["quote"]
         if (
-            not isinstance(artifact_id, str)
-            or artifact_id not in artifacts
-            or not isinstance(quote, str)
+            not isinstance(quote, str)
             or not quote.strip()
-            or quote not in artifacts[artifact_id]["text"]
+            or quote not in artifact["text"]
         ):
             raise ValueError("citation must reference a nonempty verbatim artifact quote")
-    return {citation["artifact_id"] for citation in evidence}
+        resolved.append({"artifact_id": artifact_id, "quote": quote})
+    return resolved
 
 
 def _boundaries(row, refs, artifacts):
@@ -368,7 +429,12 @@ def _boundaries(row, refs, artifacts):
         elif not (cited("retrieval.") and cited("reranking.")):
             raise ValueError("reranking fault requires both observed boundaries")
     elif code == "FP3":
-        if not (cited("retrieval.chunk.") and cited("context.")):
+        omissions = artifacts.get("context.omissions")
+        if stage == "context_assembly" and omissions is not None:
+            omitted = {item["artifact_id"] for item in omissions["omitted_chunks"]}
+            if not (refs & omitted and cited("context.")):
+                raise ValueError("FP3 requires citing a chunk omitted at the context boundary")
+        elif not (cited("retrieval.chunk.") and cited("context.")):
             raise ValueError("FP3 requires retrieved content and the actual context boundary")
         if stage == "reranking" and not cited("reranking."):
             raise ValueError("reranking attribution requires observed reranker evidence")
@@ -385,6 +451,76 @@ def _boundaries(row, refs, artifacts):
             and (cited("generation.answer") or cited("generation.manifest"))
         ):
             raise ValueError("FP5/FP6 require request constraints and the generated answer")
+
+
+_JSON_INSTRUCTION = re.compile(
+    r'(?:return|respond with|output) only (?:valid )?JSON'
+    r'(?: with a single key "([^"\n]+)")?\.?', re.IGNORECASE
+)
+
+
+def _reject_json_constant(value):
+    raise ValueError(f"{value} is not valid JSON")
+
+
+def _object_without_duplicate_keys(pairs):
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        raise ValueError("JSON object contains duplicate keys")
+    return result
+
+
+def _observed_check(category, stage, rationale, artifacts, *refs):
+    row = {
+        **_unknown(category, rationale),
+        "status": "fault" if stage else "clear",
+        "stage": stage,
+        "confidence": 1.0,
+        "evidence": [{"artifact_id": ref, "quote": artifacts[ref]["text"]} for ref in refs],
+    }
+    if stage:
+        _citations(row["evidence"], artifacts)
+        _boundaries(row, set(refs), artifacts)
+    return row
+
+
+def _deterministic_checks(artifacts):
+    checks = {}
+    if "corpus.source_membership" in artifacts:
+        checks["FP1"] = _observed_check(
+            "FP1", "corpus", "The explicitly requested source is absent from the complete "
+            "source-scoped corpus snapshot.",
+            artifacts, "query", "corpus.manifest", "corpus.source_membership",
+        )
+    if "generation.answer" not in artifacts:
+        return checks
+    for ref in ("generation.instructions", "query"):
+        for line in artifacts.get(ref, {}).get("text", "").splitlines():
+            match = _JSON_INSTRUCTION.fullmatch(line.strip())
+            if match:
+                break
+        else:
+            continue
+        break
+    else:
+        return checks
+    answer = artifacts["generation.answer"]["text"]
+    key = match[1]
+    try:
+        value = json.loads(
+            answer, parse_constant=_reject_json_constant,
+            object_pairs_hook=_object_without_duplicate_keys,
+        )
+        valid = key is None or isinstance(value, dict) and set(value) == {key}
+    except (ValueError, RecursionError):
+        valid = False
+    checks["FP5"] = _observed_check(
+        "FP5", None if valid else "generation",
+        "The response satisfies the explicit JSON-only constraint." if valid
+        else "The response violates the explicit JSON-only constraint.",
+        artifacts, ref, "generation.answer" if answer.strip() else "generation.manifest",
+    )
+    return checks
 
 
 def validate_assessment(raw, artifacts, threshold):
@@ -438,7 +574,8 @@ def validate_assessment(raw, artifacts, threshold):
             if row["status"] == "unknown":
                 validated.append(_unknown(row["category"], row["rationale"]))
                 continue
-            refs = _citations(row["evidence"], artifacts)
+            evidence = _citations(row["evidence"], artifacts)
+            refs = {citation["artifact_id"] for citation in evidence}
             # Clear/not-applicable must not turn unobserved boundaries into successes.
             code = row["category"]
             if code in ("FP2", "FP3") and "retrieval.manifest" not in artifacts:
@@ -468,6 +605,7 @@ def validate_assessment(raw, artifacts, threshold):
                 _boundaries(row, refs, artifacts)
             elif row["stage"] is not None or row["contributing_stages"]:
                 raise ValueError("non-fault assessments cannot blame stages")
+            contributors = []
             for contributor in row["contributing_stages"]:
                 if (
                     not isinstance(contributor, dict)
@@ -478,14 +616,20 @@ def validate_assessment(raw, artifacts, threshold):
                     or not contributor["rationale"].strip()
                 ):
                     raise ValueError("invalid contributor attribution")
-                contributor_refs = _citations(contributor["evidence"], artifacts)
+                contributor_evidence = _citations(contributor["evidence"], artifacts)
                 if not any(
-                    artifacts[ref]["stage"] == contributor["stage"]
-                    and artifacts[ref]["kind"] != "query"
-                    for ref in contributor_refs
+                    artifacts[citation["artifact_id"]]["stage"] == contributor["stage"]
+                    and artifacts[citation["artifact_id"]]["kind"] != "query"
+                    for citation in contributor_evidence
                 ):
                     raise ValueError("contributor lacks evidence from its own stage")
-            validated.append({**row, "confidence": min(raw["confidence"], row["confidence"])})
+                contributors.append({**contributor, "evidence": contributor_evidence})
+            validated.append({
+                **row,
+                "confidence": min(raw["confidence"], row["confidence"]),
+                "evidence": evidence,
+                "contributing_stages": contributors,
+            })
         except ValueError as error:
             validated.append(
                 _unknown(row["category"], f"Abstained: {error}. {row.get('rationale', '')}")
@@ -564,6 +708,10 @@ class DiagnosticEngine:
                     reason = raw["reason"]
                 except (ValueError, TypeError, KeyError) as error:
                     reason = f"Abstained: invalid or insufficient judge response ({error})."
+                else:
+                    self._repair_evidence(raw, rows, payload, observations)
+            checks = _deterministic_checks(artifacts)
+            rows = [checks.get(row["category"], row) for row in rows]
             faults = [row for row in rows if row["status"] == "fault"]
             unknown = tuple(row["category"] for row in rows if row["status"] == "unknown")
             primary = next(
@@ -576,7 +724,11 @@ class DiagnosticEngine:
                 ),
                 None,
             )
-            if faults and primary is None:
+            verified = next((row for row in faults if row["category"] in checks), None)
+            if verified is not None:
+                primary = verified
+                reason = verified["rationale"]
+            elif faults and primary is None:
                 reason += (
                     " Primary summary normalized to the first supported category; "
                     "the LLM's primary selection did not survive evidence validation."
@@ -633,6 +785,74 @@ class DiagnosticEngine:
         except Exception as error:
             self.record_error(trace, run, error, run_id)
             raise
+
+    def _repair_evidence(self, raw, rows, payload, observations):
+        """Repair one rejected FP3 or FP4 fault assessment without changing its attribution."""
+        repairable = (
+            "Abstained: citation ", "Abstained: invalid citation ",
+            "Abstained: non-unknown evaluations require artifact citations",
+            "Abstained: FP4/FP7 require context facts and the observed generated answer",
+            "Abstained: FP3 requires citing a chunk omitted at the context boundary",
+            "Abstained: invalid contributor attribution",
+        )
+        artifacts = payload["artifacts"]
+        original = {row["category"]: row for row in raw["evaluations"]}
+        candidates = [
+            row for row in rows
+            if row["status"] == "unknown"
+            and row["rationale"].startswith(repairable)
+            and original[row["category"]]["status"] == "fault"
+            and (
+                row["category"] == "FP3"
+                and original["FP3"]["stage"] == "context_assembly"
+                and artifacts.get("context.omissions", {}).get("omitted_chunks")
+                or row["category"] == "FP4"
+                and original["FP4"]["stage"] == "generation"
+                and {"context.text", "generation.answer"} <= artifacts.keys()
+            )
+        ]
+        if not candidates:
+            return
+        invalid = min(candidates, key=lambda row: row["category"] != raw["failure_category"])
+        category = invalid["category"]
+        candidate = original[category]
+        repair_payload = {
+            **payload,
+            "citation_repair": {
+                "category": category, "rationale": candidate["rationale"],
+                "validation_failure": invalid["rationale"],
+            },
+        }
+        if len(json.dumps(repair_payload, sort_keys=True)) > self.config.max_judge_input_chars:
+            return
+        try:
+            response = self.judge.evaluate_trace(repair_payload)
+            observations["citation_repair"] = asdict(response)
+            if response.completion_status != "completed":
+                return
+            repair = json.loads(response.raw_output)
+            replacement = next(
+                row for row in repair["evaluations"]
+                if row["category"] == category and row["status"] == "fault"
+                and row["stage"] == candidate["stage"]
+            )
+            repaired = {**candidate, "evidence": replacement["evidence"]}
+            if category == "FP3":
+                repaired["contributing_stages"] = replacement["contributing_stages"]
+            updated = {
+                **raw,
+                "evaluations": [
+                    repaired if row is candidate else row for row in raw["evaluations"]
+                ],
+            }
+            result = next(
+                row for row in validate_assessment(updated, artifacts, self.config.abstain_below)
+                if row["category"] == category
+            )
+            if result["status"] == "fault":
+                rows[rows.index(invalid)] = result
+        except (GeminiAPIError, ValueError, TypeError, KeyError, StopIteration) as error:
+            observations["citation_repair_error"] = type(error).__name__
 
     def _judge_view(self, trace):
         """Bound only corpus text sent to the LLM; preserve full original trace in the report.

@@ -216,3 +216,57 @@ def test_copy_failure_cleans_staging_directory(tmp_path, dataset, monkeypatch):
     assert not engine.output_dir.exists()
     assert not list(tmp_path.glob(".fault-injection-*"))
     assert (dataset / "paper-0.json").exists()
+
+
+@pytest.mark.parametrize("failure", ["not_in_context", "wrong_format", "incorrect_specificity"])
+def test_runtime_plans_preserve_corpus_and_capture_boundaries(tmp_path, dataset, failure):
+    from rag_pipeline.fault_injector import apply_runtime_fault
+
+    config = (
+        {}
+        if failure == "not_in_context"
+        else {
+            "instruction": "Explain precisely; return only JSON.",
+            "response": "It is complicated.",
+        }
+    )
+    case = {"query_id": "q0", "failure_type": failure, "injection_config": config}
+    original = (dataset / "paper-0.json").read_bytes()
+    engine = engine_for(tmp_path, dataset, [case])
+    registry = engine.run_injection_suite()
+    assert (engine.output_dir / "corpus/paper-0.json").read_bytes() == original
+    entry = registry["test_cases"]["q0"]
+    assert entry["attribution_status"] == "unverified"
+    assert entry["injection_status"] == "planned"
+    assert entry["evidence_required"]
+    plan = json.loads((engine.output_dir / "runtime_faults.json").read_text())["q0"]
+    context = "Before\n" + plan["evidence_text"] + "\nAfter"
+    observed = apply_runtime_fault(
+        plan, context=context, instruction=config.get("instruction"), response="Clean answer"
+    )
+    assert observed["upstream_context"] == context
+    if failure == "not_in_context":
+        assert plan["evidence_text"] not in observed["generation_context"]
+        assert observed["generation_context"] == "Before\n\nAfter"
+    else:
+        assert observed["generation_context"] == context
+        assert observed["original_response"] == "Clean answer"
+        assert observed["response"] == config["response"]
+        with pytest.raises(ValueError, match="instruction"):
+            apply_runtime_fault(plan, context=context, instruction="Different", response="Answer")
+    with pytest.raises(ValueError, match="upstream"):
+        apply_runtime_fault(plan, context="Missing evidence")
+
+
+def test_example_manifest_covers_all_seven_categories():
+    from pathlib import Path
+
+    from rag_pipeline.fault_injector import STAGES
+
+    manifest = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "manifests/faults.example.yaml").read_text()
+    )
+    cases = manifest["test_cases"]
+    assert len(cases) == 7
+    assert {case["failure_type"] for case in cases} == set(STAGES)
+    assert len({case["query_id"] for case in cases}) == 7
