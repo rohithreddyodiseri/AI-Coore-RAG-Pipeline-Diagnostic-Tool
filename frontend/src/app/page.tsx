@@ -1,5 +1,5 @@
 "use client";
-
+import Link from "next/link";
 import { useState } from "react";
 import PipelineGraph from "@/components/PipelineGraph";
 import examples from "@/data/ui-api.examples.json";
@@ -78,6 +78,13 @@ export default function Home() {
           <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-4 py-2 text-sm text-amber-300">
             Demo data
           </span>
+
+          <Link
+            href="/apps/new"
+            className="rounded-lg bg-cyan-400 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-300"
+          >
+            Connect application
+          </Link>
         </header>
 
         <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
