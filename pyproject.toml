@@ -15,10 +15,16 @@ dependencies = [
   "google-genai>=3.3,<4",
   "python-dotenv>=1.0,<2",
   "PyYAML>=6.0,<7",
+  "rich>=13.9,<15",
   "sentence-transformers>=4.0,<6",
 ]
 
 [project.optional-dependencies]
+server = [
+  "googleapis-common-protos>=1.66,<2",
+  "jsonschema>=4.23,<5",
+  "opentelemetry-proto>=1.30,<2",
+]
 dev = [
   "pytest>=8.3,<10",
   "ruff>=0.11,<1",
@@ -27,7 +33,9 @@ dev = [
 [project.scripts]
 rag-pipeline = "rag_pipeline.cli:main"
 rag-diagnose = "rag_diagnostic.cli:main"
+rag-diagnostic-server = "rag_diagnostic.server:main"
 fault-injector = "rag_pipeline.fault_injector:main"
+fault-test-runner = "rag_diagnostic.fault_test_runner:main"
 
 [tool.setuptools]
 py-modules = ["gemini_client"]

@@ -55,7 +55,7 @@ def _predicted(verdict: Verdict) -> frozenset[str]:
     return frozenset() if verdict.status == "no_failure" else frozenset(verdict.stages)
 
 
-def _execution_result(verdict: Verdict, label: ExecutionLabel) -> ExecutionResult:
+def score_verdict(verdict: Verdict, label: ExecutionLabel) -> ExecutionResult:
     predicted = _predicted(verdict)
     return ExecutionResult(
         run_id=verdict.run_id,
@@ -85,13 +85,14 @@ def evaluate_traces(traces, labels, engine):
         if run_id not in labels:
             raise KeyError(f"no label for execution {run_id}")
         verdict = engine.diagnose(trace, run_id)
-        results.append(_execution_result(verdict, labels[run_id]))
+        results.append(score_verdict(verdict, labels[run_id]))
     return summarize(results)
 
 
 def summarize(results: list[ExecutionResult]) -> dict[str, Any]:
     total = len(results)
-    answered = [r for r in results if r.status != "abstained"]
+    answered = [r for r in results if r.status in ("diagnosed", "no_failure")]
+    abstained = sum(r.status == "abstained" for r in results)
     correct = sum(r.correct for r in results)
 
     per_type: dict[str, dict[str, Any]] = {}
@@ -99,10 +100,11 @@ def summarize(results: list[ExecutionResult]) -> dict[str, Any]:
     for r in results:
         grouped[r.fault_type].append(r)
     for fault_type, rows in sorted(grouped.items()):
-        rows_answered = [r for r in rows if r.status != "abstained"]
+        rows_answered = [r for r in rows if r.status in ("diagnosed", "no_failure")]
         per_type[fault_type] = {
             "executions": len(rows),
-            "abstained": len(rows) - len(rows_answered),
+            "abstained": sum(r.status == "abstained" for r in rows),
+            "errors": sum(r.status.endswith("_error") for r in rows),
             "accuracy_when_answered": _ratio(
                 sum(r.correct for r in rows_answered), len(rows_answered)
             ),
@@ -113,8 +115,9 @@ def summarize(results: list[ExecutionResult]) -> dict[str, Any]:
     return {
         "executions": total,
         "answered": len(answered),
-        "abstained": total - len(answered),
-        "abstention_rate": _ratio(total - len(answered), total),
+        "abstained": abstained,
+        "errors": sum(r.status.endswith("_error") for r in results),
+        "abstention_rate": _ratio(abstained, total),
         "accuracy_when_answered": _ratio(sum(r.correct for r in answered), len(answered)),
         "accuracy_overall": _ratio(correct, total),
         "per_fault_type": per_type,

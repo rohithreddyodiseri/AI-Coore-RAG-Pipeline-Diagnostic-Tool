@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +20,9 @@ def _path_from_env(name: str, default: Path) -> Path:
 def load_environment() -> None:
     env_file = find_dotenv(usecwd=True)
     if env_file:
+        flags = getattr(os.stat(env_file), "st_flags", 0)
+        if flags & getattr(stat, "SF_DATALESS", 0):
+            return
         load_dotenv(env_file, override=False)
 
 

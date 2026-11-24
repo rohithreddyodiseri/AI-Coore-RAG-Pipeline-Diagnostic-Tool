@@ -1,0 +1,62 @@
+# A second seven-category suite using the downloaded Open RAGBench dataset.
+# FP1 matches faults.example.yaml. FP2–FP7 use different queries and documents.
+# Runtime faults require the configured evidence to reach their injection boundary.
+version: 1
+test_cases:
+  # FP1: Keep the same source-scoped missing-content case.
+  - query_id: "852703f0-8373-43a2-a18a-eb5908ad0779"
+    failure_type: missing_content
+    source_document: "2410.14077v2"
+
+  # FP2: Demote evidence for location-class independence below top-5.
+  - query_id: "3a004357-19ab-4ed6-b60c-02e419657cc4"
+    failure_type: missed_top_ranked
+    retrieval_top_k: 5
+    injection_config:
+      mode: runtime
+      evidence_quote: 'In this case, $u$ and $y$ are independent variables, thus $p(y, u)=p(y) \cdot p(u)$ and we rewrite Eq. 4 as:'
+
+  # FP3: Retrieve the path-planning limitations, then drop them from context.
+  - query_id: "053f9767-c2e8-433e-be80-ade7ccc93cfe"
+    failure_type: not_in_context
+    retrieval_top_k: 16
+    injection_config:
+      evidence_quote: "However, they fall short in detailed spatial and temporal reasoning, often leading to invalid or inefficient routes."
+
+  # FP4: Preserve the trap-equilibrium explanation but return a non-answer.
+  - query_id: "1f675e98-47b5-45fc-92fa-3a7e0802d794"
+    failure_type: not_extracted
+    retrieval_top_k: 16
+    injection_config:
+      mode: runtime
+      evidence_quote: "However, the repulsive potential tends to expel the atoms from the high-intensity region, leading to a new equilibrium position inside the combined IR and blue traps, where the intensity of the blue laser is lower."
+      response: "The provided context does not establish whether the repulsive potential changes the equilibrium position of the trapped atoms."
+
+  # FP5: Request JSON and return a factually relevant plain-text response.
+  - query_id: "0ba51e0a-4a91-4187-bb0b-de130d466690"
+    failure_type: wrong_format
+    retrieval_top_k: 16
+    injection_config:
+      instruction: 'Return only valid JSON with a single key "answer".'
+      evidence_quote: "Throughout, we emphasize precise and standard mathematical notation, ensuring consistency with existing texts and linking all equations to widely used references on active inference."
+      response: "Precise and standard notation ensures consistency with existing texts and links the equations to established active-inference references."
+
+  # FP6: Require a technical explanation and replace it with a vague answer.
+  - query_id: "f4c820ee-9111-4a17-bcf9-bc7b44dc18d7"
+    failure_type: incorrect_specificity
+    retrieval_top_k: 16
+    injection_config:
+      instruction: "For an electricity-demand forecasting researcher, explain the modeling challenges of mid-term hourly load forecasting in technical detail, discussing seasonal patterns, autoregressive effects, weather and holidays, and socio-economic non-stationarity."
+      evidence_quote: "In mid-term load forecasting, capturing the multifaceted characteristics of load, including daily, weekly and annual seasonal patterns, as well as autoregressive effects, weather and holiday impacts, and socio-economic non-stationarities, presents significant modeling challenges."
+      response: "Forecasting is challenging because electricity use changes over time."
+
+  # FP7: Keep both directional spectrum shapes in context, answer only one part.
+  - query_id: "af21b921-19b9-4d89-9073-a89f9f8b4be9"
+    failure_type: incomplete_answer
+    retrieval_top_k: 16
+    injection_config:
+      mode: runtime
+      query: "What shapes does the Doppler spectrum exhibit for mobile antenna motion (a) perpendicular to and (b) parallel to the mean scattering direction?"
+      expected_answer: "The Doppler spectrum has a Gaussian shape for perpendicular motion and an exponential shape for parallel motion."
+      evidence_quote: "The Doppler spectrum is observed to exhibit a Gaussian shape for mobile antenna motion perpendicular to the mean scattering direction, and an exponential one for the parallel motion."
+      response: "For mobile antenna motion perpendicular to the mean scattering direction, the Doppler spectrum has a Gaussian shape."

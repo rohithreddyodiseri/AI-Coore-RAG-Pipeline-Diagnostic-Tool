@@ -115,9 +115,10 @@ class PipelineTrace:
                     output = event["outputs"]
                     stage["output_data"] = {
                         "text": output["context"],
-                        "chunk_ids": [
-                            row["chunk_id"] for row in event["inputs"]["retrieved_results"]
-                        ],
+                        "chunk_ids": output.get(
+                            "chunk_ids",
+                            [row["chunk_id"] for row in event["inputs"]["retrieved_results"]],
+                        ),
                     }
                     payload["generation_instructions"] = output["instructions"]
             elif name == "generation":

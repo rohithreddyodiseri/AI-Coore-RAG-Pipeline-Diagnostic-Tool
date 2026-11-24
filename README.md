@@ -207,6 +207,7 @@ The run produces:
 data/fault_runs/example/
   corpus/             # Corrupted paper JSON files; input for the indexer
   ground_truth.json   # Query-keyed registry; keep outside the index
+  runtime_faults.json # Plans for faults applied after indexing
 ```
 
 To index this corpus with the existing pipeline:
@@ -216,9 +217,10 @@ rag-pipeline index --corpus-dir data/fault_runs/example/corpus \
   --chroma-dir data/chroma_faults --collection fault_example --reset
 ```
 
-The example manifest uses four real query IDs from the downloaded dataset.
+The example manifest uses seven real query IDs from the downloaded dataset.
 Each case specifies a `query_id`, `failure_type`, and optional `injection_config`.
-The query text and clean answer come from the dataset; `qrels.json` supplies the
+The default query text and clean answer come from the dataset. FP7 supplies an
+explicit two-part query. `qrels.json` supplies the
 default document and section. Sections are selected by their `section_id`, which
 can differ from their position in the sections array.
 
@@ -329,3 +331,106 @@ The consumer uses the Gemini judge for FP1–FP7 attribution and preserves the o
 run ID, evidence, confidence and unresolved checks in its JSON report.
 
 See [the telemetry contract and operating guide](docs/diagnostic-tool.md).
+
+## Fault benchmark
+
+With Open RAGBench downloaded and Gemini credentials available, run the suite.
+
+```bash
+fault-test-runner --manifest manifests/faults.example.yaml \
+  --corpus-dir data/open_ragbench/pdf/arxiv/corpus \
+  --config configs/open-ragbench-diagnostic.json \
+  --output-dir data/fault_runs/diagnostic_benchmark
+```
+
+The terminal displays live progress for corpus preparation, clean indexing,
+creation of the corrupted index, each baseline/fault/diagnosis case, and report writing.
+Indexing bars show source-file completion and the current indexed chunk count.
+Use `--no-progress` when redirecting output to a log or running without a terminal.
+
+Use a fresh output directory for each run. The same command is available via
+`rag-diagnose fault-test-runner` or `python -m rag_diagnostic.fault_test_runner`.
+
+The benchmark uses the full downloaded corpus. It indexes the clean corpus,
+applies the manifest's corpus mutations to a hard-linked full copy, then builds the
+corrupted Chroma collection from the clean collection's stored embeddings while
+omitting FP1's deleted document. Runtime faults do not require re-embedding unchanged
+documents. The independent reference pipeline implementation lives in
+`src/rag_diagnostic/reference_pipeline.py` and executes text loading, chunking,
+sentence-transformer embeddings, Chroma vector search, prompt construction and
+Gemini generation. Shared configuration, corpus loading and telemetry formats
+keep its inputs and observations compatible with the main pipeline.
+
+All seven queries execute against the clean baseline and the corrupted pipeline.
+Retrieval uses the configured top-k and deeper inspection cutoff. Target evidence
+is selected by the actual search. The runner records a runtime fault as unapplied
+when its required evidence fails to reach the relevant boundary. FP4/FP7 use a
+whitespace-normalized evidence quote to check the exact context precondition.
+
+| Case | Injection boundary |
+| --- | --- |
+| FP1 | Delete the source paper from the full copied corpus before indexing |
+| FP2 | Move the supporting indexed chunk below the retrieval cutoff |
+| FP3 | Remove the supporting retrieved chunk before assembling the prompt |
+| FP4 | Preserve the supporting context and replace the answer with one that misses the fact |
+| FP5 | Send an explicit JSON instruction and replace the answer with plain text |
+| FP6 | Send an explicit detail requirement and replace the answer with a vague response |
+| FP7 | Keep evidence for both query parts and replace the answer with a partial response |
+
+The run saves clean baseline traces under `baseline_traces/`, faulted diagnostic
+inputs under `traces/`, and persistent query events and index artifacts. Each
+directory contains one trace per category. The judge receives the observed artifacts. The
+separate `report.json` compares predictions with the registry and includes
+verdicts, evidence, errors, and the pre-injection retrieval order and model
+answer. Suite accuracy requires the exact stage and category sets and counts
+abstentions and run errors as misses. Primary accuracy compares only the
+primary stage and category. The report also shows accuracy among answered
+cases and the abstention rate. `injection_coverage` measures how many cases
+actually received their fault. `diagnostic_accuracy` scores only those applied
+cases. The per-case `injection_applied` and `injection_reason` explain unmet
+preconditions. A successful clean execution records the baseline answer and
+retrieval behavior. Its answer quality still requires semantic assessment.
+
+If a run stops after completing clean indexing, resume the same output directory.
+The runner reuses the completed clean Chroma collection and does not repeat embedding:
+
+```bash
+rag-diagnose fault-test-runner \
+  --manifest manifests/faults.example.yaml \
+  --corpus-dir data/open_ragbench/pdf/arxiv/corpus \
+  --config configs/open-ragbench-diagnostic.json \
+  --output-dir data/fault_runs/diagnostic_benchmark \
+  --resume
+```
+
+On macOS, if the output directory is managed by iCloud and the runner reports that
+`ground_truth.json` is `dataless`, download that small registry before resuming:
+
+```bash
+brctl download data/fault_runs/diagnostic_benchmark/ground_truth.json
+```
+
+Index-build telemetry is intentionally compact in benchmark mode; it records counts
+and model/collection metadata without writing or re-hashing every embedding vector.
+
+The UI backend can read `report.json` using `schema_version`, `benchmark_id`,
+`status`, timestamps, suite and diagnostic accuracy, coverage, per-fault metrics,
+stage and category confusion, and `cases` with baseline/fault trace paths.
+The report is updated after each query so completed cases remain available
+during a run. Large full-corpus snapshots may exceed the judge's corpus budget.
+The judge then sees an explicitly incomplete view, which can cause FP1 to
+abstain. Each case records `judge_corpus_complete` when available.
+
+Re-score a saved run after changing the judge prompt or recovering from a provider
+error. This reuses the seven saved traces and writes a fresh report.
+
+```bash
+rag-diagnose fault-test-runner \
+  --replay-dir data/fault_runs/diagnostic_benchmark \
+  --config configs/open-ragbench-diagnostic.json \
+  --output-dir data/fault_runs/diagnostic_benchmark_replayed
+```
+
+Gemini requests retry transient HTTP 429/500/502/503/504 responses up to three
+attempts. Reports retain API failures as errors, include them in overall accuracy,
+and expose per-category validation reasons when a diagnosis abstains.

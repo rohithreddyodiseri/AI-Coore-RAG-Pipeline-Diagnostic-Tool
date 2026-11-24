@@ -218,6 +218,9 @@ class RAGPipeline:
     def assemble_context(self, query: str, results: list[SearchResult]) -> str:
         return "\n\n".join(f"[{n}] {result.text}" for n, result in enumerate(results, start=1))
 
+    def context_sources(self, results: list[SearchResult]) -> list[SearchResult]:
+        return results
+
     def generate(self, query: str, context: str) -> str:
         return self._inference.generate(
             prompt=f"Question:\n{query}\n\nContext:\n{context}",
@@ -282,12 +285,14 @@ class RAGPipeline:
             )
             retrieved = self._serialize_results(results)
 
-            def build_prompt() -> dict[str, str]:
-                context = self.assemble_context(query, results)
+            def build_prompt() -> dict[str, Any]:
+                sources = self.context_sources(results)
+                context = self.assemble_context(query, sources)
                 return {
                     "instructions": self.generation_instructions,
                     "context": context,
                     "input": f"Question:\n{query}\n\nContext:\n{context}",
+                    "chunk_ids": [row["chunk_id"] for row in self._serialize_results(sources)],
                 }
 
             prompt = events.capture(

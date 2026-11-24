@@ -14,8 +14,8 @@ from rag_diagnostic.taxonomy import CATEGORIES, STAGES
 CITATION_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "properties": {"artifact_id": {"type": "string"}, "quote": {"type": "string"}},
-    "required": ["artifact_id", "quote"],
+    "properties": {"artifact_id": {"type": "string"}, "span_id": {"type": "integer"}},
+    "required": ["artifact_id", "span_id"],
 }
 CONTRIBUTOR_SCHEMA = {
     "type": "object",
@@ -87,9 +87,42 @@ results, domain keywords, or a bounded search. corpus.manifest.complete is autho
 for the named snapshot and scope, not the world. FP1 fault requires that manifest to be complete.
 A relevant indexed source in deeper retrieval below the cutoff supports FP2 only if it answers
 the query, not just shares terms. Corpus presence alone cannot distinguish ranking
-from indexing loss.
+from indexing loss. Check whether the selected context already has equivalent supporting
+facts before attributing an answer problem to a lower-ranked chunk.
 FP4/FP7 require the missing answer facts to be in the exact context; FP5/FP6 can be evaluated
 without source facts. For FP7 identify requested parts and which supported parts were omitted.
+Only context.text and generation.input describe the context sent to generation.
+retrieval.chunk.*, deep.chunk.* and corpus.document.* are upstream evidence and may
+contain text that never reached generation. Compare the actual text at both boundaries.
+
+Required citation artifact IDs for fault rows (include ALL listed artifacts):
+FP1: query AND corpus.manifest (complete=true).
+FP2 at retrieval: retrieval.manifest AND a relevant deep.chunk.* whose rank exceeds
+the cutoff and whose chunk_id is absent from retrieval.manifest.chunk_ids.
+FP2 at reranking: relevant retrieval.chunk.* AND reranking artifacts showing loss.
+FP3 at context assembly: relevant upstream chunk AND context.omissions when available.
+The evidence array must cite the actual upstream artifact_id named in omitted_chunks,
+in addition to the manifest that shows the omission.
+Use context.text or context.manifest when context.omissions is unavailable.
+FP3 at reranking: relevant retrieval.chunk.* AND reranking and context evidence.
+FP4: context.text containing the unused fact AND generation.answer.
+FP5/FP6: query or generation.instructions AND generation.answer.
+FP7: query AND context.text containing the omitted fact AND generation.answer.
+Use these canonical IDs even when equivalent text appears inside a stage input artifact.
+Contributing stages must differ from the primary stage and have independent evidence.
+Every clear/not_applicable row also requires at least one valid citation.
+For citations, return artifact_id and its zero-based span_id. When the artifact has a spans
+array, use the array index of the passage that supports your claim. For an artifact with
+text instead, use span_id=0. The caller copies the exact source text. Never retype it.
+context.omissions lists chunks with recorded upstream IDs absent from the final context's
+chunk IDs. Treat these as observed boundary differences, and assess whether the omitted
+text answers the query and whether equivalent facts reached generation. A chunk listed as
+omitted after retrieval was retrieved; do not classify its omission as a retrieval miss.
+When the payload contains citation_repair, reassess its category using only the observed
+artifacts and address the validation failure. For FP3 cite the actual omitted upstream
+chunk and context.omissions. For FP4 cite the context span with the unused fact and the
+answer. Use contributing_stages=[] when there is no independently supported stage.
+If the claim is unsupported, mark that category unknown. Return the full response schema.
 
 For each category return fault, clear, unknown, or not_applicable, confidence, stage, a concise
 checkable justification, exact artifact citations, and independently evidenced contributing stages.
@@ -99,8 +132,7 @@ Only fault evaluations may name a stage or contributors. For clear, unknown, and
 not_applicable use stage=null and contributing_stages=[]. Unknown uses confidence=0.
 Overall confidence describes the supported verdict, not confidence that unobserved categories
 are fault-free. Every non-unknown evaluation must cite observed artifacts.
-Cite nonempty VERBATIM quotes
-from artifact.text; cite a manifest for empty text or selection/rank evidence. Never fabricate IDs.
+Cite a manifest for empty text or selection/rank evidence. Never fabricate IDs.
 A fault needs citations from both relevant stage boundaries, including the failed response when
 judging generation. FP5/FP6 need query/instruction and response citations. Cite manifests for
 observed empty outputs. Each contributing stage must have its own citations and justification.
@@ -139,8 +171,24 @@ class UnavailableJudge:
         return JudgeResponse("", "unavailable")
 
 
+def citation_spans(artifact):
+    """Split long context into contiguous, verbatim spans whose IDs are array indices."""
+    text = artifact["text"]
+    if artifact["kind"] != "context" or len(text) <= 600:
+        return [text]
+    spans = []
+    start = 0
+    while len(text) - start > 600:
+        end = text.rfind(" ", start + 300, start + 600)
+        end = end + 1 if end != -1 else start + 600
+        spans.append(text[start:end])
+        start = end
+    spans.append(text[start:])
+    return spans
+
+
 class LLMJudge:
-    VERSION = 3
+    VERSION = 7
 
     def __init__(self, model, cache_path, client=None, max_output_tokens=6000):
         self.model, self.cache_path = model, Path(cache_path)
@@ -162,7 +210,19 @@ class LLMJudge:
         }
 
     def evaluate_trace(self, payload):
-        prompt = json.dumps(payload, sort_keys=True, allow_nan=False)
+        artifacts = {}
+        for artifact_id, artifact in payload.get("artifacts", {}).items():
+            spans = citation_spans(artifact)
+            if len(spans) == 1:
+                artifacts[artifact_id] = artifact
+            else:
+                artifacts[artifact_id] = {
+                    **{key: value for key, value in artifact.items() if key != "text"},
+                    "spans": spans,
+                }
+        prompt = json.dumps(
+            {**payload, "artifacts": artifacts}, sort_keys=True, allow_nan=False
+        )
         key = hashlib.sha256(
             json.dumps([self.describe(), prompt], sort_keys=True).encode()
         ).hexdigest()

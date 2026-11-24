@@ -77,7 +77,11 @@
           "additionalProperties": false,
           "required": ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_PROTOCOL", "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_SERVICE_NAME"],
           "properties": {
-            "OTEL_EXPORTER_OTLP_ENDPOINT": { "type": "string", "format": "uri", "pattern": "^https://" },
+            "OTEL_EXPORTER_OTLP_ENDPOINT": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^(?:https://|http://(?:localhost|127[.]0[.]0[.]1|\\[::1\\])(?::[0-9]+)?/?$)"
+            },
             "OTEL_EXPORTER_OTLP_PROTOCOL": { "const": "http/protobuf" },
             "OTEL_EXPORTER_OTLP_HEADERS": { "type": "string", "minLength": 1 },
             "OTEL_SERVICE_NAME": { "type": "string", "minLength": 1 }

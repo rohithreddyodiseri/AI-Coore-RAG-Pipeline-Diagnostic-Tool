@@ -65,7 +65,8 @@ def test_empty_judge_reply_is_preserved_for_abstention():
 
 
 @pytest.mark.parametrize("code", [404, 429])
-def test_provider_errors_exclude_credentials_and_do_not_switch_model(code):
+def test_provider_errors_exclude_credentials_and_do_not_switch_model(code, monkeypatch):
+    monkeypatch.setattr(gemini_client.time, "sleep", lambda _: None)
     secret = "private-test-credential"
 
     def failure(request):
@@ -79,8 +80,28 @@ def test_provider_errors_exclude_credentials_and_do_not_switch_model(code):
         engine.generate("question")
     assert secret not in str(caught.value)
     assert str(code) in str(caught.value)
-    assert client.calls == 1
+    assert client.calls == (3 if code == 429 else 1)
     assert client.requests[0]["model"] == "requested-model"
+
+
+def test_transient_provider_error_retries_then_recovers(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(gemini_client.time, "sleep", sleeps.append)
+    count = 0
+
+    def reply(request):
+        nonlocal count
+        count += 1
+        if count < 3:
+            error = RuntimeError("unavailable")
+            error.code = 503
+            raise error
+        return "Recovered."
+
+    client = FakeClient(reply)
+    assert GeminiInferenceEngine(client=client).generate("Question") == "Recovered."
+    assert client.calls == 3
+    assert sleeps == [2, 4]
 
 
 def test_missing_key_has_actionable_error(monkeypatch):
