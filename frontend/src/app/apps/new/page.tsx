@@ -17,11 +17,26 @@ export default function RegisterAppPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<RegistrationResult | null>(null);
+  const [copyMessage, setCopyMessage] = useState("");
+  const [copyError, setCopyError] = useState("");
+
+  const exporterSettings = result
+    ? Object.entries(result.env)
+        .map(([key, value]) => `${key}=${value}`)
+        .join("\n")
+    : "";
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    if (loading || !serviceName.trim()) {
+      return;
+    }
+
     setLoading(true);
     setError("");
+    setCopyMessage("");
+    setCopyError("");
 
     try {
       const response = await fetch("/api/apps", {
@@ -47,6 +62,20 @@ export default function RegisterAppPage() {
       );
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function copyExporterSettings() {
+    setCopyMessage("");
+    setCopyError("");
+
+    try {
+      await navigator.clipboard.writeText(exporterSettings);
+      setCopyMessage("Exporter settings copied.");
+    } catch {
+      setCopyError(
+        "Could not copy automatically. Select the settings below and press Cmd + C."
+      );
     }
   }
 
@@ -78,10 +107,11 @@ export default function RegisterAppPage() {
               <input
                 id="service"
                 required
+                disabled={loading}
                 value={serviceName}
                 onChange={(event) => setServiceName(event.target.value)}
                 placeholder="my-rag-app"
-                className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 p-3 outline-none focus:border-cyan-400"
+                className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 p-3 outline-none focus:border-cyan-400 disabled:opacity-50"
               />
             </div>
 
@@ -91,9 +121,10 @@ export default function RegisterAppPage() {
               </label>
               <select
                 id="environment"
+                disabled={loading}
                 value={environment}
                 onChange={(event) => setEnvironment(event.target.value)}
-                className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 p-3"
+                className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 p-3 disabled:opacity-50"
               >
                 <option value="staging">Staging</option>
                 <option value="production">Production</option>
@@ -131,16 +162,51 @@ export default function RegisterAppPage() {
               key is returned only once.
             </p>
 
-            <pre className="overflow-x-auto rounded-lg bg-slate-950 p-4 text-xs leading-7 text-cyan-300">
-              {Object.entries(result.env)
-                .map(([key, value]) => `${key}=${value}`)
-                .join("\n")}
+            <button
+              type="button"
+              onClick={copyExporterSettings}
+              className="rounded-lg bg-cyan-400 px-4 py-3 text-sm font-medium text-slate-950 hover:bg-cyan-300"
+            >
+              Copy exporter settings
+            </button>
+
+            {copyMessage && (
+              <p role="status" className="text-sm text-emerald-400">
+                {copyMessage}
+              </p>
+            )}
+
+            {copyError && (
+              <p role="alert" className="text-sm text-amber-300">
+                {copyError}
+              </p>
+            )}
+
+            <pre
+              tabIndex={0}
+              aria-label="Exporter environment settings"
+              className="select-text overflow-x-auto rounded-lg bg-slate-950 p-4 text-xs leading-7 text-cyan-300"
+            >
+              {exporterSettings}
             </pre>
 
-            <p className="text-sm text-slate-400">
-              Registration is complete. Your RAG application still needs
-              these settings and OpenTelemetry instrumentation to send traces.
+            <p className="text-sm leading-6 text-slate-400">
+              Configure these environment variables on your RAG application
+              server and enable its OpenTelemetry instrumentation. Then run
+              a query and check the applications list for the first received
+              trace.
             </p>
+
+            <p className="text-sm text-amber-300">
+              Registration alone does not confirm telemetry delivery.
+            </p>
+
+            <Link
+              href="/apps"
+              className="inline-block rounded-lg border border-slate-700 px-4 py-3 text-sm text-cyan-400 hover:border-cyan-400"
+            >
+              View applications
+            </Link>
           </section>
         )}
       </div>
