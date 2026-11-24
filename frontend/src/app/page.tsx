@@ -158,6 +158,13 @@ export default function Home() {
           >
             Trace explorer
           </Link>
+
+          <Link
+            href="/spans"
+            className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-cyan-400 hover:border-cyan-400"
+          >
+            Span inspector
+          </Link>
         </header>
 
         <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
