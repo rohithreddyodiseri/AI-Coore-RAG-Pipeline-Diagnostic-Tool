@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reference RAG App</title>
+<style>
+  :root { --text: #1d2330; --muted: #667085; --line: #e3e6eb; --accent: #2f5fd0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--text); background: #f6f7f9; }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  header { padding: 12px 24px; background: #1d2330; color: #fff; font-weight: 600; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 0.84rem; }
+  form { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: grid; gap: 10px; }
+  textarea, input[type=text] { width: 100%; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; }
+  textarea { min-height: 70px; resize: vertical; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .row label { display: flex; gap: 6px; align-items: center; }
+  #flag-reason { flex: 1; min-width: 220px; }
+  button { font: inherit; padding: 8px 16px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+  button:disabled { opacity: 0.6; cursor: wait; }
+  .turn { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-top: 16px; }
+  .question { font-weight: 600; margin-bottom: 8px; }
+  .answer { white-space: pre-wrap; }
+  .error { background: #fde8e7; color: #a3261d; border-radius: 8px; padding: 10px 12px; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 0.78rem; font-weight: 600; background: #fff4dc; color: #8a5a00; }
+  ol.sources { padding-left: 22px; margin: 6px 0 0; }
+  ol.sources li { margin: 4px 0; }
+  details summary { cursor: pointer; color: var(--accent); font-size: 0.84rem; }
+  details p { white-space: pre-wrap; background: #f7f8fa; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font-size: 0.86rem; }
+  .meta { margin-top: 10px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<header>Reference RAG App</header>
+<main>
+  <p class="muted">Ask a question about the Open RAGBench papers. Each question is traced with OpenTelemetry so the diagnostic tool can inspect it.</p>
+  <form id="ask-form">
+    <textarea id="query" placeholder="What methods are used to improve retrieval quality?" required></textarea>
+    <div class="row">
+      <label><input type="checkbox" id="flag"> Flag for diagnosis</label>
+      <input type="text" id="flag-reason" placeholder="Reason, e.g. answer is missing details" disabled>
+      <button type="submit" id="submit">Ask</button>
+    </div>
+  </form>
+  <div id="turns"></div>
+</main>
+<script>
+  // All server text is inserted with textContent, never as HTML.
+  const form = document.getElementById("ask-form");
+  const queryInput = document.getElementById("query");
+  const flag = document.getElementById("flag");
+  const flagReason = document.getElementById("flag-reason");
+  const submit = document.getElementById("submit");
+  const turns = document.getElementById("turns");
+
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined && text !== null) node.textContent = text;
+    return node;
+  }
+
+  flag.addEventListener("change", () => {
+    flagReason.disabled = !flag.checked;
+    if (flag.checked) flagReason.focus();
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const query = queryInput.value.trim();
+    if (!query) return;
+    const flagText = flag.checked ? (flagReason.value.trim() || "Flagged from the reference app") : null;
+
+    const turn = el("div", "turn");
+    turn.append(el("div", "question", query), el("p", "muted", "Thinking…"));
+    turns.prepend(turn);
+    submit.disabled = true;
+
+    let data;
+    try {
+      const response = await fetch("/api/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, flag_reason: flagText }),
+      });
+      data = await response.json();
+    } catch (error) {
+      data = { error: `Could not reach the app server. ${error.message}` };
+    } finally {
+      submit.disabled = false;
+    }
+    renderTurn(turn, query, data);
+  });
+
+  function renderTurn(turn, query, data) {
+    turn.replaceChildren(el("div", "question", query));
+
+    if (data.error) {
+      turn.append(el("div", "error", data.error));
+    } else {
+      turn.append(el("div", "answer", data.answer));
+      if (data.sources && data.sources.length) {
+        turn.append(el("div", "small muted", "Sources"));
+        const list = el("ol", "sources");
+        for (const source of data.sources) {
+          const item = el("li");
+          let label = source.title;
+          if (source.section !== null && source.section !== undefined) {
+            label += source.section === -1 ? " (abstract)" : ` (section ${source.section})`;
+          }
+          item.append(el("span", null, label));
+          if (typeof source.score === "number") item.append(el("span", "small muted", `  similarity ${source.score.toFixed(3)}`));
+          const details = el("details");
+          details.append(el("summary", null, "Show passage"), el("p", null, source.text));
+          item.append(details);
+          list.append(item);
+        }
+        turn.append(list);
+      }
+    }
+
+    const meta = el("div", "meta small muted");
+    if (data.trace_id) {
+      meta.append("Trace ID ", el("code", null, data.trace_id));
+    } else {
+      meta.append("Tracing is off (no OTLP endpoint or trace file configured).");
+    }
+    if (data.flagged) meta.append(el("span", "badge", data.error ? "failed, sent for diagnosis" : "flagged for diagnosis"));
+    turn.append(meta);
+  }
+</script>
+</body>
+</html>

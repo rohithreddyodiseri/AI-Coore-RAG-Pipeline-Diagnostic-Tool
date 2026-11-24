@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RAG Execution Telemetry v1",
+  "description": "One normalized RAG execution. OpenTelemetry producers export spans over OTLP; the diagnostic receiver assembles those spans into this JSON envelope. See diagnostic-tool.md#opentelemetry-producer-contract-v1.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "execution_status",
+    "stages"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "description": "The actual user query. Required for legacy files and for invoking the diagnostic engine. Omit from an OTLP-derived record when content is unavailable."
+    },
+    "execution_status": { "enum": ["completed", "failed"] },
+    "otel": {
+      "type": "object",
+      "description": "Correlation metadata supplied by the receiver for records normalized from OTLP.",
+      "required": ["contract_version", "trace_id", "execution_span_id", "service_name"],
+      "properties": {
+        "contract_version": { "const": "1.0" },
+        "trace_id": { "$ref": "#/$defs/traceId" },
+        "execution_span_id": { "$ref": "#/$defs/spanId" },
+        "service_name": { "type": "string", "minLength": 1, "pattern": "\\S" }
+      }
+    },
+    "pipeline": {
+      "type": "object",
+      "description": "Producer identity, code/settings, optional index_snapshot reference; no credentials or labels."
+    },
+    "stages": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "status": { "enum": ["completed", "failed", "not_used", "unknown"] },
+          "input_data": {},
+          "output_data": {},
+          "error": { "type": "object" },
+          "recorded_at": { "type": "string" },
+          "index_run_id": { "type": "string" },
+          "span_id": { "$ref": "#/$defs/spanId" },
+          "duration_ms": { "type": "number", "minimum": 0 }
+        }
+      }
+    },
+    "final_answer": { "type": "string" },
+    "generation_instructions": { "type": "string" },
+    "inspection_errors": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Receiver notes about unavailable, incomplete, or invalid evidence."
+    },
+    "failure_signal": {
+      "type": "object",
+      "required": ["flagged"],
+      "properties": {
+        "flagged": { "type": "boolean" },
+        "reason": { "type": ["string", "null"] }
+      }
+    },
+    "corpus": {
+      "type": "object",
+      "required": ["documents", "complete"],
+      "properties": {
+        "documents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["doc_id", "text"],
+            "properties": {
+              "doc_id": { "type": "string" },
+              "text": { "type": "string" }
+            }
+          }
+        },
+        "complete": { "type": "boolean" },
+        "scope": { "type": "string" },
+        "snapshot_id": { "type": "string" }
+      },
+      "if": { "properties": { "complete": { "const": true } } },
+      "then": { "required": ["scope", "snapshot_id"] }
+    }
+  },
+  "if": { "required": ["otel"] },
+  "then": {
+    "required": ["failure_signal"],
+    "properties": {
+      "run_id": {
+        "pattern": "^[0-9a-f]{32}:[0-9a-f]{16}$",
+        "description": "Concatenate otel.trace_id, a colon, and otel.execution_span_id."
+      },
+      "stages": {
+        "patternProperties": {
+          ".*": {
+            "required": ["status"],
+            "if": { "properties": { "status": { "const": "not_used" } } },
+            "then": { "not": { "required": ["output_data"] } }
+          }
+        },
+        "properties": {
+          "query_embedding": {
+            "properties": {
+              "output_data": {
+                "type": "array",
+                "items": { "type": "array", "items": { "type": "number" } }
+              }
+            }
+          },
+          "retrieval": { "$ref": "#/$defs/rankedStage" },
+          "reranking": { "$ref": "#/$defs/rankedStage" },
+          "context_assembly": {
+            "properties": {
+              "output_data": {
+                "anyOf": [
+                  { "type": "string" },
+                  {
+                    "type": "object",
+                    "required": ["text"],
+                    "properties": {
+                      "text": { "type": "string" },
+                      "chunk_ids": {
+                        "type": "array",
+                        "items": { "type": "string", "minLength": 1 }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "generation": {
+            "properties": {
+              "input_data": {
+                "type": "object",
+                "properties": {
+                  "prompt": { "type": "string" },
+                  "system_instruction": { "type": "string" },
+                  "model": { "type": "string" }
+                }
+              },
+              "output_data": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "if": { "properties": { "execution_status": { "const": "failed" } } },
+    "then": { "properties": { "failure_signal": { "properties": { "flagged": { "const": true } } } } }
+  },
+  "else": { "required": ["query"] },
+  "$defs": {
+    "traceId": { "type": "string", "pattern": "^[0-9a-f]{32}$", "not": { "const": "00000000000000000000000000000000" } },
+    "spanId": { "type": "string", "pattern": "^[0-9a-f]{16}$", "not": { "const": "0000000000000000" } },
+    "rankedStage": {
+      "properties": {
+        "k": { "type": "integer", "minimum": 1 },
+        "output_data": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["chunk_id", "text", "rank"],
+            "properties": {
+              "chunk_id": { "type": "string", "minLength": 1 },
+              "doc_id": { "type": "string", "minLength": 1 },
+              "text": { "type": "string" },
+              "rank": { "type": "integer", "minimum": 1 },
+              "score": { "type": "number" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

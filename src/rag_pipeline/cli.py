@@ -8,6 +8,7 @@ from pathlib import Path
 from rag_pipeline.config import Settings
 from rag_pipeline.corpus import OpenRAGBenchLoader
 from rag_pipeline.pipeline import RAGPipeline
+from rag_pipeline.telemetry import setup_tracing
 
 
 def _parser(defaults: Settings) -> argparse.ArgumentParser:
@@ -32,6 +33,16 @@ def _parser(defaults: Settings) -> argparse.ArgumentParser:
     ask.add_argument("--embedding-model", default=defaults.embedding_model)
     ask.add_argument("--llm-model", default=defaults.llm_model)
     ask.add_argument("--top-k", type=int, default=defaults.top_k)
+    ask.add_argument("--flag-reason", help="Flag this query for diagnosis with a short reason")
+
+    serve = commands.add_parser("serve", help="Run the web UI")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--chroma-dir", type=Path, default=defaults.chroma_dir)
+    serve.add_argument("--collection", default=defaults.collection)
+    serve.add_argument("--embedding-model", default=defaults.embedding_model)
+    serve.add_argument("--llm-model", default=defaults.llm_model)
+    serve.add_argument("--top-k", type=int, default=defaults.top_k)
     return parser
 
 
@@ -70,7 +81,25 @@ def main(argv: list[str] | None = None) -> None:
             llm_model=args.llm_model,
             top_k=args.top_k,
         )
-        answer, sources = RAGPipeline(settings).ask(args.query)
+        provider = setup_tracing()
+
+        if args.command == "serve":
+            from rag_pipeline.web import serve
+
+            try:
+                serve(RAGPipeline(settings), args.host, args.port)
+            finally:
+                if provider is not None:
+                    provider.shutdown()
+            return
+
+        pipeline = RAGPipeline(settings)
+        try:
+            answer, sources = pipeline.ask(args.query, flag_reason=args.flag_reason)
+        finally:
+            if provider is not None:
+                print(f"Trace ID: {pipeline.last_trace_id}", file=sys.stderr)
+                provider.shutdown()  # sends any spans still waiting in the batch
         print(f"\n{answer}\n\nSources:")
         titles = dict.fromkeys(source.metadata.get("title", "Untitled") for source in sources)
         for number, title in enumerate(titles, start=1):

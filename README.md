@@ -178,6 +178,62 @@ RAG_TOP_K
 
 Use the same embedding model when indexing and asking questions. If the embedding model or chunking settings change, rebuild the index.
 
+## Web UI, tracing and the OTLP adapter (Person 3: C1–C3)
+
+This section covers Person 3's tickets in the handoff plan. The span names and
+attributes follow Person 1's "OpenTelemetry producer contract v1" in
+`docs/diagnostic-tool.md` on the `Fault_Diagnostic_Tool` branch. The record
+format is `docs/telemetry.schema.json`, copied unchanged from that branch.
+
+### C1: Web UI
+
+```bash
+rag-pipeline serve            # http://127.0.0.1:8000
+```
+
+Ask a question to see the answer, the numbered source papers (each with its
+passage) and any error. Check **Flag for diagnosis** and add a reason to
+request diagnosis of an answer that looks wrong. Each answer shows its trace ID.
+
+### C2: OpenTelemetry spans
+
+Each query creates one `rag.query` span with four child spans:
+`query_embedding`, `retrieval`, `context_assembly` and `generation`.
+Reranking is declared `not_used`, because this pipeline has no reranker.
+Export is set up from environment variables when `ask` or `serve` starts:
+
+| Variable | Purpose |
+|---|---|
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Person 1's receiver URL, ending in `/v1/traces` (from onboarding) |
+| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | `Authorization=Bearer%20<ingestion key>` (from onboarding; never put it in code) |
+| `OTEL_SERVICE_NAME` | Registered app name; defaults to `reference-rag` |
+| `RAG_TRACE_CONTENT=1` | Also send the query, passages, prompt and answer. The engine needs these to diagnose. Off by default, as the contract requires |
+| `RAG_TRACE_FILE` | Also append each trace as OTLP/JSON to a local file (for fixtures and for testing without a receiver) |
+
+With neither an endpoint nor a trace file set, no spans are recorded. From the CLI:
+
+```bash
+RAG_TRACE_CONTENT=1 RAG_TRACE_FILE=traces.otlp.jsonl rag-pipeline ask "..." --flag-reason "Answer missed details"
+```
+
+A runtime error marks the failed stage and the whole execution as `failed`.
+Only the exception class name is exported, never the message.
+
+### C3: OTLP adapter
+
+`rag_otel_adapter.normalize(otlp_json)` turns OTLP/JSON export requests into
+one record per `rag.query` span, in the `telemetry.schema.json` format.
+Person 1 calls it from the trace API (A4) and passes the result to
+`DiagnosticEngine.diagnose`. Records without a query should be reported as
+insufficient evidence instead of being diagnosed. Malformed, duplicate or
+orphaned evidence is dropped and explained in `inspection_errors`.
+
+```bash
+python -m rag_otel_adapter traces.otlp.jsonl     # print normalized records
+```
+
+Draft step-0 fixtures are in `fixtures/step0/`.
+
 ## Tests
 
 Run the included tests:
@@ -186,13 +242,16 @@ Run the included tests:
 python -m pytest
 ```
 
-The repository includes three tests covering:
+The tests cover:
 
 - Loading abstracts, section text, and tables while excluding image data.
 - Limiting the number of loaded corpus files.
 - Generating stable chunk identifiers.
+- The spans each query emits, including failures, flags and content capture (`tests/test_telemetry.py`).
+- The web UI endpoint (`tests/test_web.py`).
+- The OTLP adapter's output against `docs/telemetry.schema.json`, including the step-0 fixtures (`tests/test_otel_adapter.py`).
 
-These tests do not measure retrieval accuracy or validate live model answers.
+The pipeline tests use fake retrieval and a fake model, so they need no index or API key. These tests do not measure retrieval accuracy or validate live model answers.
 
 ## Release notes
 
