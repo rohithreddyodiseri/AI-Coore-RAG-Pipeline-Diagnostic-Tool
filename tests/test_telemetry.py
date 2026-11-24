@@ -125,7 +125,7 @@ def test_generation_uses_gemini_model_and_instructions(make_pipeline):
     pipeline = make_pipeline()
     pipeline.ask("How can retrieval improve?")
     [request] = pipeline._inference._client.requests
-    assert request["model"] == "gemini-3.5-flash-lite"
+    assert request["model"] == pipeline.settings.llm_model
     assert "only the provided context" in request["config"]["system_instruction"]
     assert request["contents"].startswith("Question:\nHow can retrieval improve?")
 
