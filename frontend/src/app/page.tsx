@@ -85,6 +85,13 @@ export default function Home() {
           >
             Connect application
           </Link>
+
+          <Link
+            href="/apps"
+            className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-cyan-400 hover:border-cyan-400"
+          >
+            View applications
+          </Link>
         </header>
 
         <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
