@@ -92,6 +92,13 @@ export default function Home() {
           >
             View applications
           </Link>
+
+          <Link
+            href="/traces"
+            className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-cyan-400 hover:border-cyan-400"
+          >
+            Trace explorer
+          </Link>
         </header>
 
         <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
