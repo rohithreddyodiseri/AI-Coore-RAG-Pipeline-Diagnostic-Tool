@@ -2,27 +2,15 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import PipelineGraph from "@/components/PipelineGraph";
 import examples from "@/data/ui-api.examples.json";
 
 const traces = [examples.TraceDetail];
-
-type Artifact = {
-  artifact_id: string;
-  kind: string;
-  availability: string;
-  content: unknown;
-};
-
-const artifacts = examples.artifacts_by_id as Record<string, Artifact>;
 
 export default function TraceExplorerPage() {
   const [search, setSearch] = useState("");
   const [environment, setEnvironment] = useState("all");
   const [status, setStatus] = useState("all");
   const [flagged, setFlagged] = useState("all");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedNodeId, setSelectedNodeId] = useState("");
 
   const filteredTraces = traces.filter(({ execution }) => {
     const searchable = [
@@ -41,17 +29,6 @@ export default function TraceExplorerPage() {
         execution.flagged === (flagged === "flagged"))
     );
   });
-
-  const selectedTrace = filteredTraces.find(
-    ({ execution }) => execution.execution_id === selectedId
-  );
-
-  const selectedNode =
-    selectedTrace?.graph.nodes.find(
-      (node) => node.node_id === selectedNodeId
-    ) ?? selectedTrace?.graph.nodes[0];
-
-  const verdict = selectedTrace?.latest_live_diagnosis.verdict;
 
   function resetFilters() {
     setSearch("");
@@ -72,9 +49,11 @@ export default function TraceExplorerPage() {
 
         <header className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="mt-4 text-3xl font-semibold">Trace explorer</h1>
+            <h1 className="mt-4 text-3xl font-semibold">
+              Trace explorer
+            </h1>
             <p className="mt-2 text-sm text-slate-400">
-              Search executions and inspect their stages and evidence.
+              Search executions and open their stages and evidence.
             </p>
           </div>
 
@@ -115,6 +94,7 @@ export default function TraceExplorerPage() {
               className={fieldClass}
             >
               <option value="all">All statuses</option>
+
               {Array.from(
                 new Set(traces.map((trace) => trace.execution.status))
               ).map((value) => (
@@ -157,12 +137,24 @@ export default function TraceExplorerPage() {
           <table className="w-full text-left text-sm">
             <thead className="border-b border-slate-800 text-slate-400">
               <tr>
-                <th className="p-4">Execution</th>
-                <th className="p-4">App</th>
-                <th className="p-4">Environment</th>
-                <th className="p-4">Duration</th>
-                <th className="p-4">Runtime</th>
-                <th className="p-4">Diagnosis</th>
+                <th scope="col" className="p-4">
+                  Execution
+                </th>
+                <th scope="col" className="p-4">
+                  App
+                </th>
+                <th scope="col" className="p-4">
+                  Environment
+                </th>
+                <th scope="col" className="p-4">
+                  Duration
+                </th>
+                <th scope="col" className="p-4">
+                  Runtime
+                </th>
+                <th scope="col" className="p-4">
+                  Diagnosis
+                </th>
               </tr>
             </thead>
 
@@ -170,31 +162,34 @@ export default function TraceExplorerPage() {
               {filteredTraces.map(({ execution }) => (
                 <tr
                   key={execution.execution_id}
-                  className={`border-b border-slate-800 last:border-0 ${
-                    selectedId === execution.execution_id
-                      ? "bg-cyan-400/10"
-                      : ""
-                  }`}
+                  className="border-b border-slate-800 last:border-0 hover:bg-slate-800/50"
                 >
                   <td className="p-4">
-                    <button
-                      type="button"
-                      aria-pressed={selectedId === execution.execution_id}
-                      onClick={() => {
-                        setSelectedId(execution.execution_id);
-                        setSelectedNodeId("");
-                      }}
+                    <Link
+                      href={`/traces/${encodeURIComponent(
+                        execution.execution_id
+                      )}`}
                       className="font-mono text-cyan-400 hover:underline"
                     >
                       {execution.execution_id}
-                    </button>
+                    </Link>
                   </td>
+
                   <td className="p-4">{execution.app_id}</td>
-                  <td className="p-4">{execution.environment}</td>
-                  <td className="p-4">{execution.duration_ms} ms</td>
+
+                  <td className="p-4">
+                    {execution.environment}
+                  </td>
+
+                  <td className="p-4">
+                    {execution.duration_ms} ms
+                  </td>
+
                   <td className="p-4">{execution.status}</td>
+
                   <td className="p-4">
                     {execution.diagnosis_state}
+
                     {execution.flagged && (
                       <span className="ml-2 text-xs text-amber-300">
                         Flagged
@@ -206,7 +201,10 @@ export default function TraceExplorerPage() {
 
               {filteredTraces.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="p-8 text-center text-slate-400">
+                  <td
+                    colSpan={6}
+                    className="p-8 text-center text-slate-400"
+                  >
                     No executions match these filters. Try clearing them.
                   </td>
                 </tr>
@@ -215,141 +213,11 @@ export default function TraceExplorerPage() {
           </table>
         </section>
 
-        {!selectedTrace && filteredTraces.length > 0 && (
+        {filteredTraces.length > 0 && (
           <p className="rounded-xl border border-slate-800 p-6 text-sm text-slate-400">
-            Select an execution ID above to inspect its details.
+            Click an execution ID to open its pipeline graph, verdict,
+            and supporting evidence.
           </p>
-        )}
-
-        {selectedTrace && verdict && selectedNode && (
-          <>
-            <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-              <h2 className="text-lg font-semibold">
-                Execution {selectedTrace.execution.execution_id}
-              </h2>
-
-              <p className="mt-2 break-all font-mono text-xs text-slate-400">
-                Trace ID: {selectedTrace.execution.trace_id}
-              </p>
-
-              <p className="mt-2 text-xs text-slate-400">
-                Started: {selectedTrace.execution.started_at}
-              </p>
-
-              <PipelineGraph
-                graph={selectedTrace.graph}
-                selectedNodeId={selectedNode.node_id}
-                primaryStage={verdict.primary_stage}
-                onSelectNode={setSelectedNodeId}
-              />
-            </section>
-
-            <div className="grid gap-5 lg:grid-cols-2">
-              <section className="min-w-0 rounded-xl border border-slate-800 bg-slate-900 p-5">
-                <h2 className="font-semibold">{selectedNode.label}</h2>
-
-                <p className="mt-2 text-sm text-slate-400">
-                  Runtime: {selectedNode.status} · {selectedNode.duration_ms} ms
-                </p>
-
-                {selectedNode.artifact_ids.length === 0 && (
-                  <p className="mt-4 text-sm text-slate-400">
-                    No artifacts were supplied for this stage.
-                  </p>
-                )}
-
-                {selectedNode.artifact_ids.map((id) => {
-                  const artifact = artifacts[id];
-
-                  return (
-                    <div
-                      key={id}
-                      className="mt-4 rounded-lg border border-slate-700 bg-slate-950 p-4"
-                    >
-                      <h3 className="break-all font-mono text-xs text-cyan-400">
-                        {id}
-                      </h3>
-
-                      <p className="mt-2 text-xs text-slate-400">
-                        Availability: {artifact?.availability ?? "unknown"}
-                      </p>
-
-                      <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-slate-300">
-                        {artifact?.availability === "available"
-                          ? typeof artifact.content === "string"
-                            ? artifact.content
-                            : JSON.stringify(artifact.content, null, 2)
-                          : "Artifact content is unavailable."}
-                      </pre>
-                    </div>
-                  );
-                })}
-              </section>
-
-              <section className="rounded-xl border border-amber-400/30 bg-slate-900 p-5">
-                <h2 className="font-semibold">Diagnostic verdict</h2>
-
-                <p className="mt-3 text-sm text-amber-300">
-                  {verdict.category} ·{" "}
-                  {verdict.primary_stage.replaceAll("_", " ")}
-                </p>
-
-                <p className="mt-3 text-sm leading-6 text-slate-300">
-                  {verdict.summary}
-                </p>
-
-                <p className="mt-4 text-sm text-cyan-400">
-                  Evidence score: {(verdict.confidence * 100).toFixed(0)}%
-                </p>
-
-                <p className="mt-1 text-xs text-slate-400">
-                  Uncalibrated score; not a probability of correctness.
-                </p>
-
-                <h3 className="mt-5 text-sm font-semibold">Evidence</h3>
-
-                {verdict.evidence_trail.map((evidence, index) => (
-                  <div key={index} className="mt-3">
-                    <p className="text-sm leading-6 text-slate-300">
-                      {evidence.finding}
-                    </p>
-
-                    {evidence.citations.map((citation, citationIndex) => (
-                      <blockquote
-                        key={`${citation.artifact_id}-${citationIndex}`}
-                        className="mt-3 border-l-2 border-cyan-400 pl-3"
-                      >
-                        <p className="text-sm text-slate-300">
-                          “{citation.quote}”
-                        </p>
-                        <p className="mt-1 break-all font-mono text-xs text-slate-500">
-                          {citation.artifact_id}
-                        </p>
-                      </blockquote>
-                    ))}
-                  </div>
-                ))}
-
-                <h3 className="mt-5 text-sm font-semibold">
-                  Suggested next steps
-                </h3>
-
-                {verdict.recommendations.map((recommendation, index) => (
-                  <p
-                    key={index}
-                    className="mt-3 text-sm leading-6 text-slate-300"
-                  >
-                    {recommendation.action}
-                  </p>
-                ))}
-
-                <p className="mt-5 text-xs text-amber-300">
-                  Unresolved categories:{" "}
-                  {verdict.unresolved_categories.join(", ") || "None"}
-                </p>
-              </section>
-            </div>
-          </>
         )}
       </div>
     </main>
