@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from gemini_client import GeminiAPIError
 from rag_otel_adapter import normalize
 from rag_pipeline.telemetry import otlp_json
 
@@ -52,7 +53,7 @@ def test_healthy_query_normalizes_to_valid_record(make_pipeline, spans, monkeypa
 
 def test_generation_failure_is_flagged_and_keeps_error_type(make_pipeline, spans, monkeypatch):
     monkeypatch.setenv("RAG_TRACE_CONTENT", "1")
-    with pytest.raises(ConnectionError):
+    with pytest.raises(GeminiAPIError):
         make_pipeline(error=ConnectionError("down")).ask("How can retrieval improve?")
 
     [record] = normalize(export(spans))
@@ -61,7 +62,7 @@ def test_generation_failure_is_flagged_and_keeps_error_type(make_pipeline, spans
     assert record["failure_signal"]["flagged"] is True
     generation = record["stages"]["generation"]
     assert generation["status"] == "failed"
-    assert generation["error"] == {"type": "ConnectionError"}
+    assert generation["error"] == {"type": "GeminiAPIError"}
     assert "output_data" not in generation
     assert "final_answer" not in record
 

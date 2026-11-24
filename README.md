@@ -5,7 +5,7 @@
 
 This project is a command-line retrieval-augmented generation (RAG) application that answers questions using documents from Open RAGBench.
 
-The application loads document text, splits it into smaller chunks, creates embeddings, and stores them in ChromaDB. When a user asks a question, it retrieves relevant chunks and sends them to `gpt-5.6 Sol` to generate an answer. The answer and retrieved source paper titles appear in the terminal.
+The application loads document text, splits it into smaller chunks, creates embeddings, and stores them in ChromaDB. When a user asks a question, it retrieves relevant chunks and sends them to Google Gemini (`gemini-3.5-flash-lite` by default) to generate an answer. The answer and retrieved source paper titles appear in the terminal.
 
 This pipeline is the starting point for a larger project focused on diagnosing RAG failures.
 
@@ -13,7 +13,7 @@ This pipeline is the starting point for a larger project focused on diagnosing R
 
 - Python 3.11 is recommended. The project supports Python 3.10–3.13.
 - Internet access for downloading the dataset and embedding model.
-- An OpenAI API key with API access for generating answers.
+- A Gemini API key from Google AI Studio (https://aistudio.google.com) for generating answers.
 - A Hugging Face read token is optional for authenticated downloads.
 
 ## 1. Set Up the Environment
@@ -40,10 +40,12 @@ source .venv/bin/activate
 Create a file named `.env` in the project root and add:
 
 ```dotenv
-OPENAI_API_KEY=your_openai_api_key
+GEMINI_API_KEY=your_gemini_api_key
 ```
 
-The application loads this file when running the indexing and question-answering commands. An OpenAI API key is required for answer generation, but not for local embedding or indexing.
+Create the key in Google AI Studio (https://aistudio.google.com, **Get API key**). The application loads this file when running the indexing and question-answering commands. The key is required for answer generation, but not for local embedding or indexing. `.env` is ignored by git; never commit the key.
+
+The free tier is rate limited. Requests are spaced at least `GEMINI_MIN_REQUEST_INTERVAL_SECONDS` apart (default 2). Raise it, for example to 4, if you see rate-limit errors.
 
 
 ## 3. Download the Dataset
@@ -140,7 +142,7 @@ Default settings:
 | Setting | Default |
 |---|---|
 | Embedding model | `sentence-transformers/all-MiniLM-L6-v2` |
-| Generation model | `gpt-4o-mini` |
+| Generation model | `gemini-3.5-flash-lite` |
 | Vector database | Persistent ChromaDB |
 | Similarity measure | Cosine distance |
 | Collection | `open_ragbench` |
@@ -170,6 +172,7 @@ RAG_CHROMA_DIR
 RAG_COLLECTION
 RAG_EMBEDDING_MODEL
 RAG_LLM_MODEL
+GEMINI_MIN_REQUEST_INTERVAL_SECONDS
 RAG_CHUNK_SIZE
 RAG_CHUNK_OVERLAP
 RAG_BATCH_SIZE

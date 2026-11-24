@@ -1,11 +1,11 @@
 [
   {
     "schema_version": "1.0",
-    "run_id": "295977d118886fcb937f4c7a5fbe1bf7:2c9913b3987d54f3",
+    "run_id": "6b9c343178fa479f90caa74ef15b368c:ba812743b17e9ce5",
     "otel": {
       "contract_version": "1.0",
-      "trace_id": "295977d118886fcb937f4c7a5fbe1bf7",
-      "execution_span_id": "2c9913b3987d54f3",
+      "trace_id": "6b9c343178fa479f90caa74ef15b368c",
+      "execution_span_id": "ba812743b17e9ce5",
       "service_name": "reference-rag"
     },
     "execution_status": "failed",
@@ -16,8 +16,8 @@
     "stages": {
       "context_assembly": {
         "status": "completed",
-        "span_id": "eeb6db6166226967",
-        "duration_ms": 0.04891,
+        "span_id": "dcc603668decf6d3",
+        "duration_ms": 0.073212,
         "output_data": {
           "text": "[1] Dense Passage Retrieval\n\nWe show that retrieval can be practically implemented using dense representations alone, outperforming a strong BM25 system by 9%-19% absolute in top-20 passage retrieval accuracy.\n\n[2] Hybrid retrieval combines sparse lexical matching with dense embeddings, and a cross-encoder reranker reorders the merged candidates before generation.\n\n[3] Query expansion with pseudo-relevance feedback adds terms from top-ranked documents to the original query.",
           "chunk_ids": [
@@ -29,29 +29,29 @@
       },
       "generation": {
         "status": "failed",
-        "span_id": "dd51d0521fa50233",
-        "duration_ms": 0.09628,
+        "span_id": "c546f49a0faf19a8",
+        "duration_ms": 0.123942,
         "input_data": {
           "prompt": "Question:\nWhat methods are used to improve retrieval quality?\n\nContext:\n[1] Dense Passage Retrieval\n\nWe show that retrieval can be practically implemented using dense representations alone, outperforming a strong BM25 system by 9%-19% absolute in top-20 passage retrieval accuracy.\n\n[2] Hybrid retrieval combines sparse lexical matching with dense embeddings, and a cross-encoder reranker reorders the merged candidates before generation.\n\n[3] Query expansion with pseudo-relevance feedback adds terms from top-ranked documents to the original query.",
           "system_instruction": "Answer the question using only the provided context. If the answer is not in the context, say you do not know.",
-          "model": "gpt-4o-mini"
+          "model": "gemini-3.5-flash-lite"
         },
         "error": {
-          "type": "OpenAIError"
+          "type": "ValueError"
         }
       },
       "query_embedding": {
         "status": "completed",
-        "span_id": "af18214e6b05f882",
-        "duration_ms": 0.073368,
+        "span_id": "8c9ca834d75832d7",
+        "duration_ms": 0.066755,
         "input_data": [
           "What methods are used to improve retrieval quality?"
         ]
       },
       "retrieval": {
         "status": "completed",
-        "span_id": "fbfdf6b76c26ffd5",
-        "duration_ms": 0.091316,
+        "span_id": "16a435824fc401c3",
+        "duration_ms": 0.147924,
         "k": 5,
         "output_data": [
           {

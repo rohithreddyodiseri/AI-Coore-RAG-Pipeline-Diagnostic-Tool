@@ -5,7 +5,8 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from rag_pipeline.config import Settings, load_environment
+from gemini_client import GeminiInferenceEngine
+from rag_pipeline.config import Settings
 from rag_pipeline.corpus import Document
 from rag_pipeline.telemetry import execution_span, stage_span
 
@@ -40,6 +41,9 @@ class RAGPipeline:
         self._embedder: Any = None
         self._collection: Any = None
         self.last_trace_id: str | None = None
+        # Person 1's shared Gemini client: reads GEMINI_API_KEY, paces requests,
+        # and keeps credentials out of error messages.
+        self._inference = GeminiInferenceEngine(settings.llm_model)
 
     def _embedding_model(self) -> Any:
         if self._embedder is None:
@@ -192,16 +196,8 @@ class RAGPipeline:
                 "model": self.settings.llm_model,
             }
             with stage_span("generation", input_data=generation_input) as stage:
-                load_environment()
-                from openai import OpenAI
+                answer = self._inference.generate(prompt, system_instruction=ANSWER_INSTRUCTIONS)
+                stage.output(answer)
 
-                response = OpenAI().responses.create(
-                    model=self.settings.llm_model,
-                    instructions=ANSWER_INSTRUCTIONS,
-                    input=prompt,
-                )
-                stage.output(response.output_text)
-
-            answer = response.output_text.strip()
             execution.finish(answer=answer, instructions=ANSWER_INSTRUCTIONS)
         return answer, results

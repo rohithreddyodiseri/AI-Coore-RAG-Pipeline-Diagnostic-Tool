@@ -6,6 +6,8 @@ from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
 
+from gemini_client import DEFAULT_MODEL
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -44,7 +46,7 @@ class Settings:
             embedding_model=os.getenv(
                 "RAG_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
             ),
-            llm_model=os.getenv("RAG_LLM_MODEL", "gpt-4o-mini"),
+            llm_model=os.getenv("RAG_LLM_MODEL", DEFAULT_MODEL),
             chunk_size=int(os.getenv("RAG_CHUNK_SIZE", "800")),
             chunk_overlap=int(os.getenv("RAG_CHUNK_OVERLAP", "120")),
             batch_size=int(os.getenv("RAG_BATCH_SIZE", "64")),

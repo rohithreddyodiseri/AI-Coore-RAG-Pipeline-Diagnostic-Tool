@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+from gemini_client import GeminiAPIError
+
 
 def by_name(spans):
     return {span.name: span for span in spans.get_finished_spans()}
@@ -85,25 +87,47 @@ def test_flag_reason_marks_the_query_for_diagnosis(make_pipeline, spans):
 
 
 def test_generation_error_marks_stage_and_execution_failed(make_pipeline, spans):
-    class AuthenticationError(Exception):
-        pass
+    class ClientError(Exception):
+        code = 400
 
-    pipeline = make_pipeline(error=AuthenticationError("Incorrect API key provided: sk-secret"))
-    with pytest.raises(AuthenticationError):
+    pipeline = make_pipeline(error=ClientError("API key not valid: AIza-secret"))
+    with pytest.raises(GeminiAPIError):
         pipeline.ask("How can retrieval improve?")
 
     finished = by_name(spans)
     generation = finished["rag.generation"]
     assert generation.attributes["rag.stage.status"] == "failed"
-    assert generation.attributes["error.type"] == "AuthenticationError"
+    assert generation.attributes["error.type"] == "GeminiAPIError"
     assert generation.status.status_code.name == "ERROR"
     root = finished["rag.query"]
     assert root.attributes["rag.execution.status"] == "failed"
     assert root.status.status_code.name == "ERROR"
-    # The exception message (which can hold secrets) is never exported.
+    # Neither the client's message nor the key ever reaches a span.
     for span in spans.get_finished_spans():
         assert not span.events
-        assert "sk-secret" not in json.dumps(dict(span.attributes))
+        assert "AIza-secret" not in json.dumps(dict(span.attributes))
+
+
+def test_missing_gemini_key_fails_at_generation(make_pipeline, spans, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setattr("rag_pipeline.config.load_environment", lambda: None)
+    pipeline = make_pipeline()
+    pipeline._inference._client = None  # use the real client setup, which needs a key
+    with pytest.raises(ValueError, match="GEMINI_API_KEY"):
+        pipeline.ask("How can retrieval improve?")
+    generation = by_name(spans)["rag.generation"].attributes
+    assert generation["rag.stage.status"] == "failed"
+    assert generation["error.type"] == "ValueError"
+
+
+def test_generation_uses_gemini_model_and_instructions(make_pipeline):
+    pipeline = make_pipeline()
+    pipeline.ask("How can retrieval improve?")
+    [request] = pipeline._inference._client.requests
+    assert request["model"] == "gemini-3.5-flash-lite"
+    assert "only the provided context" in request["config"]["system_instruction"]
+    assert request["contents"].startswith("Question:\nHow can retrieval improve?")
 
 
 def test_empty_index_fails_at_retrieval(make_pipeline, spans):

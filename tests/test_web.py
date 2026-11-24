@@ -68,7 +68,7 @@ def test_flag_reason_reaches_the_trace(server, spans):
 def test_pipeline_error_is_shown_with_trace_id(server):
     status, data = post(server(error=ConnectionError("model down")), {"query": "How?"})
     assert status == 500
-    assert data["error"] == "ConnectionError: model down"
+    assert data["error"].startswith("GeminiAPIError: Gemini request failed")
     assert len(data["trace_id"]) == 32
 
 

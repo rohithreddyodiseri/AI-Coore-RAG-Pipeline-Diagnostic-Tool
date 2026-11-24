@@ -1,6 +1,5 @@
 """Shared fakes so pipeline tests run without models, Chroma, or an OpenAI key."""
 
-import sys
 import types
 
 import pytest
@@ -52,18 +51,21 @@ class FakeCollection:
         }
 
 
-def fake_openai(answer=None, error=None):
-    class Responses:
-        def create(self, **_):
-            if error:
-                raise error
-            return types.SimpleNamespace(output_text=answer)
+class FakeGeminiClient:
+    """Stands in for google.genai.Client inside Person 1's GeminiInferenceEngine."""
 
-    class OpenAI:
-        def __init__(self, *_, **__):
-            self.responses = Responses()
+    def __init__(self, answer=None, error=None):
+        self.answer, self.error, self.requests = answer, error, []
+        self.models = self
 
-    return types.SimpleNamespace(OpenAI=OpenAI)
+    def generate_content(self, model, contents, config):
+        self.requests.append({"model": model, "contents": contents, "config": config})
+        if self.error:
+            raise self.error
+        stop = types.SimpleNamespace(finish_reason="STOP")
+        return types.SimpleNamespace(
+            text=self.answer, candidates=[stop], response_id="r1", model_version=model
+        )
 
 
 @pytest.fixture
@@ -73,15 +75,16 @@ def spans():
 
 
 @pytest.fixture
-def make_pipeline(monkeypatch, tmp_path):
-    """Builds a RAGPipeline with fake retrieval and a fake OpenAI client."""
+def make_pipeline(tmp_path):
+    """Builds a RAGPipeline with fake retrieval and a fake Gemini client."""
 
     def build(chunks=CHUNKS, answer="Use hybrid search and reranking.", error=None):
-        monkeypatch.setitem(sys.modules, "openai", fake_openai(answer, error))
         settings = Settings.from_env()
         pipeline = RAGPipeline(settings.__class__(**{**settings.__dict__, "chroma_dir": tmp_path}))
         pipeline._embedder = FakeEmbedder()
         pipeline._collection = FakeCollection(list(chunks))
+        pipeline._inference._client = FakeGeminiClient(answer, error)
+        pipeline._inference.min_request_interval_seconds = 0  # no pacing in tests
         return pipeline
 
     return build
