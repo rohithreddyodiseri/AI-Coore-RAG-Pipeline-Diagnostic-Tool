@@ -1,0 +1,10 @@
+{
+  "judge": "llm",
+  "judge_model": "gemini-3.5-flash-lite",
+  "abstain_below": 0.7,
+  "deep_k": 20,
+  "judge_cache": "runs/open-ragbench/judge_cache.json",
+  "runs_dir": "runs/open-ragbench",
+  "inspect_corpus": true,
+  "corpus_budget_chars": 40000
+}

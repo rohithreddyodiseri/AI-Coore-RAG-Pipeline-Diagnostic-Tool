@@ -4,30 +4,50 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "open-ragbench-pipeline"
-version = "0.1.0"
-description = "A simple command-line RAG pipeline over the Open RAGBench corpus."
+version = "0.2.0"
+description = "A RAG pipeline and reference-free stage diagnostic tool."
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 dependencies = [
   "chromadb>=1.0,<2",
+  "google-genai>=3.3,<4",
   "huggingface-hub>=0.30,<2",
   "langchain-text-splitters>=0.3,<2",
-  "openai>=1.75,<3",
   "python-dotenv>=1.0,<2",
+  "opentelemetry-sdk>=1.30,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.30,<2",
+  "PyYAML>=6.0,<7",
+  "rich>=13.9,<15",
   "sentence-transformers>=4.0,<6",
 ]
 
 [project.optional-dependencies]
+server = [
+  "googleapis-common-protos>=1.66,<2",
+  "jsonschema>=4.23,<5",
+  "opentelemetry-proto>=1.30,<2",
+]
 dev = [
+  "jsonschema>=4.18,<5",
   "pytest>=8.3,<10",
   "ruff>=0.11,<1",
 ]
 
 [project.scripts]
 rag-pipeline = "rag_pipeline.cli:main"
+rag-diagnose = "rag_diagnostic.cli:main"
+rag-diagnostic-server = "rag_diagnostic.server:main"
+fault-injector = "rag_pipeline.fault_injector:main"
+fault-test-runner = "rag_diagnostic.fault_test_runner:main"
+
+[tool.setuptools]
+py-modules = ["gemini_client"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+rag_pipeline = ["static/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

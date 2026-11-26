@@ -8,6 +8,7 @@ from pathlib import Path
 from rag_pipeline.config import Settings
 from rag_pipeline.corpus import OpenRAGBenchLoader
 from rag_pipeline.pipeline import RAGPipeline
+from rag_pipeline.telemetry import setup_tracing
 
 
 def _parser(defaults: Settings) -> argparse.ArgumentParser:
@@ -27,17 +28,29 @@ def _parser(defaults: Settings) -> argparse.ArgumentParser:
 
     ask = commands.add_parser("ask", help="Ask a question")
     ask.add_argument("query")
+    ask.add_argument("--failure-reason", help="Flag this captured run for diagnostic ingestion")
     ask.add_argument("--chroma-dir", type=Path, default=defaults.chroma_dir)
     ask.add_argument("--collection", default=defaults.collection)
     ask.add_argument("--embedding-model", default=defaults.embedding_model)
     ask.add_argument("--llm-model", default=defaults.llm_model)
     ask.add_argument("--top-k", type=int, default=defaults.top_k)
+    ask.add_argument(
+        "--diagnostics-dir",
+        type=Path,
+        default=defaults.diagnostics_dir,
+        help="directory for per-query JSONL pipeline traces",
+    )
+    web = commands.add_parser("serve", help="Run the reference RAG web UI")
+    web.add_argument("--host", default="127.0.0.1")
+    web.add_argument("--port", type=int, default=8000)
     return parser
 
 
 def main(argv: list[str] | None = None) -> None:
     defaults = Settings.from_env()
     args = _parser(defaults).parse_args(argv)
+    pipeline: RAGPipeline | None = None
+    provider = None
 
     try:
         if args.command == "index":
@@ -62,6 +75,14 @@ def main(argv: list[str] | None = None) -> None:
             print(f"Indexed {total} chunks.{' ' * 20}")
             return
 
+        provider = setup_tracing()
+        if args.command == "serve":
+            from rag_pipeline.web import serve
+
+            pipeline = RAGPipeline(defaults)
+            serve(pipeline, args.host, args.port)
+            return
+
         settings = replace(
             defaults,
             chroma_dir=args.chroma_dir.expanduser().resolve(),
@@ -69,17 +90,25 @@ def main(argv: list[str] | None = None) -> None:
             embedding_model=args.embedding_model,
             llm_model=args.llm_model,
             top_k=args.top_k,
+            diagnostics_dir=args.diagnostics_dir.expanduser().resolve(),
         )
-        answer, sources = RAGPipeline(settings).ask(args.query)
+        pipeline = RAGPipeline(settings)
+        answer, sources = pipeline.ask(args.query, failure_reason=args.failure_reason)
         print(f"\n{answer}\n\nSources:")
         titles = dict.fromkeys(source.metadata.get("title", "Untitled") for source in sources)
         for number, title in enumerate(titles, start=1):
             print(f"[{number}] {title}")
+        print(f"\nDiagnostics: {pipeline.last_trace_path}", file=sys.stderr)
     except KeyboardInterrupt:
         raise SystemExit(130) from None
     except Exception as error:
         print(f"Error: {error}", file=sys.stderr)
+        if pipeline is not None and pipeline.last_trace_path is not None:
+            print(f"Diagnostics: {pipeline.last_trace_path}", file=sys.stderr)
         raise SystemExit(1) from error
+    finally:
+        if provider is not None:
+            provider.shutdown()
 
 
 if __name__ == "__main__":

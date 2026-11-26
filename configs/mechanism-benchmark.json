@@ -1,0 +1,8 @@
+{
+  "assessment_mode": "stage",
+  "judge": "llm",
+  "abstain_below": 0.7,
+  "max_judge_input_chars": 100000,
+  "judge_max_output_tokens": 10000,
+  "judge_cache": "runs/mechanism-judge-cache.json"
+}

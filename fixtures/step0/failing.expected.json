@@ -1,0 +1,86 @@
+[
+  {
+    "schema_version": "1.0",
+    "run_id": "6b9c343178fa479f90caa74ef15b368c:ba812743b17e9ce5",
+    "otel": {
+      "contract_version": "1.0",
+      "trace_id": "6b9c343178fa479f90caa74ef15b368c",
+      "execution_span_id": "ba812743b17e9ce5",
+      "service_name": "reference-rag"
+    },
+    "execution_status": "failed",
+    "failure_signal": {
+      "flagged": true,
+      "reason": null
+    },
+    "stages": {
+      "context_assembly": {
+        "status": "completed",
+        "span_id": "dcc603668decf6d3",
+        "duration_ms": 0.073212,
+        "output_data": {
+          "text": "[1] Dense Passage Retrieval\n\nWe show that retrieval can be practically implemented using dense representations alone, outperforming a strong BM25 system by 9%-19% absolute in top-20 passage retrieval accuracy.\n\n[2] Hybrid retrieval combines sparse lexical matching with dense embeddings, and a cross-encoder reranker reorders the merged candidates before generation.\n\n[3] Query expansion with pseudo-relevance feedback adds terms from top-ranked documents to the original query.",
+          "chunk_ids": [
+            "3f1c0d6e9a2b4c5d8e7f6a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d",
+            "8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b",
+            "c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2"
+          ]
+        }
+      },
+      "generation": {
+        "status": "failed",
+        "span_id": "c546f49a0faf19a8",
+        "duration_ms": 0.123942,
+        "input_data": {
+          "prompt": "Question:\nWhat methods are used to improve retrieval quality?\n\nContext:\n[1] Dense Passage Retrieval\n\nWe show that retrieval can be practically implemented using dense representations alone, outperforming a strong BM25 system by 9%-19% absolute in top-20 passage retrieval accuracy.\n\n[2] Hybrid retrieval combines sparse lexical matching with dense embeddings, and a cross-encoder reranker reorders the merged candidates before generation.\n\n[3] Query expansion with pseudo-relevance feedback adds terms from top-ranked documents to the original query.",
+          "system_instruction": "Answer the question using only the provided context. If the answer is not in the context, say you do not know.",
+          "model": "gemini-3.5-flash-lite"
+        },
+        "error": {
+          "type": "ValueError"
+        }
+      },
+      "query_embedding": {
+        "status": "completed",
+        "span_id": "8c9ca834d75832d7",
+        "duration_ms": 0.066755,
+        "input_data": [
+          "What methods are used to improve retrieval quality?"
+        ]
+      },
+      "retrieval": {
+        "status": "completed",
+        "span_id": "16a435824fc401c3",
+        "duration_ms": 0.147924,
+        "k": 5,
+        "output_data": [
+          {
+            "chunk_id": "3f1c0d6e9a2b4c5d8e7f6a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d",
+            "text": "Dense Passage Retrieval\n\nWe show that retrieval can be practically implemented using dense representations alone, outperforming a strong BM25 system by 9%-19% absolute in top-20 passage retrieval accuracy.",
+            "rank": 1,
+            "doc_id": "2004.04906",
+            "score": 0.69
+          },
+          {
+            "chunk_id": "8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b",
+            "text": "Hybrid retrieval combines sparse lexical matching with dense embeddings, and a cross-encoder reranker reorders the merged candidates before generation.",
+            "rank": 2,
+            "doc_id": "2104.08663",
+            "score": 0.62
+          },
+          {
+            "chunk_id": "c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2",
+            "text": "Query expansion with pseudo-relevance feedback adds terms from top-ranked documents to the original query.",
+            "rank": 3,
+            "doc_id": "2305.03653",
+            "score": 0.56
+          }
+        ]
+      },
+      "reranking": {
+        "status": "not_used"
+      }
+    },
+    "query": "What methods are used to improve retrieval quality?"
+  }
+]

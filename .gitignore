@@ -1,4 +1,5 @@
 .env
+.env.otel
 .venv/
 venv/
 __pycache__/
@@ -12,3 +13,4 @@ htmlcov/
 data/
 *.log
 .DS_Store
+runs/

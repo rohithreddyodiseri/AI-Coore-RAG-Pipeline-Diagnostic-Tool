@@ -1,0 +1,60 @@
+# Paths passed on the command line are relative to your current working directory.
+# Query text, clean answers, documents and sections resolve from Open RAGBench.
+version: 1
+test_cases:
+  # Ask specifically for evidence from this paper, then remove it.
+  - query_id: "852703f0-8373-43a2-a18a-eb5908ad0779"
+    failure_type: missing_content
+    source_document: "2410.14077v2"
+
+  # FP2: Move relevant indexed evidence below the retrieval cutoff.
+  - query_id: "9199173b-3ed1-4118-88cd-1713fc5fa8a7"
+    failure_type: missed_top_ranked
+    retrieval_top_k: 5
+    injection_config:
+      mode: runtime
+      evidence_quote: 'Specifically, it has been found that both $\alpha$ and $\beta$ decrease with increasing heterogeneity in the effective microbial death rate. In contrast, both $\alpha$ and $\beta$ increase when increasing the expectation of the effective microbial death rate.'
+
+  # FP3: Remove the retrieved feature-selection section at context assembly.
+  # The indexed excerpt stays intact.
+  - query_id: "a045b4ee-2986-41ce-983e-50cac2d94421"
+    failure_type: not_in_context
+    retrieval_top_k: 16
+    injection_config:
+      evidence_quote: "Traditional feature selection methods for classification use data from all classes to select features for each class."
+
+  # FP4: Leave the fact in context and return an answer that misses it.
+  - query_id: "283afa84-f0c8-40a7-a6f1-fb2a6b97c761"
+    failure_type: not_extracted
+    injection_config:
+      mode: runtime
+      evidence_quote: 'The only data required to fully characterize an StQP is the data matrix Q. However, in many applications the matrix Q is uncertain. StQPs with uncertain data have been explored in the literature. One of the most natural ways to deal with uncertain objective functions is via robust optimization [2].'
+      response: "The context does not explain how uncertainty affects the problem."
+
+  # FP5: The caller must send this explicit format instruction to generation.
+  # Replace its response with prose that violates the JSON-only requirement.
+  - query_id: "947fbbd3-465b-48ad-bc13-068dd830b215"
+    failure_type: wrong_format
+    injection_config:
+      instruction: 'Return only valid JSON with a single key "answer".'
+      evidence_quote: 'We calculate the mean of each feature across all $N$ imagined continuations for a given chapter. This represents the average expected future state of the narrative.'
+      response: "For each chapter, take the mean of each feature across all imagined continuations."
+
+  # FP6: Replace the detailed technical answer with a deliberately vague answer.
+  - query_id: "ea187e37-7dd4-4bcb-9986-f0471c3b93c6"
+    failure_type: incorrect_specificity
+    injection_config:
+      instruction: "For a graduate researcher, explain the computational challenges of Langevin samplers with complex paths, including concrete mechanisms and their consequences."
+      evidence_quote: "In a more general setting, we can observe in Figure 4 that once the closer mode is reached, the path seems to evolve the particle weights, which is problematic for Langevin dynamics."
+      response: "They are difficult because the paths are complex."
+
+  # FP7: Ask two explicit parts and return an answer to only the first.
+  - query_id: "f210906a-b4a4-4b97-84df-106214024650"
+    failure_type: incomplete_answer
+    retrieval_top_k: 16
+    injection_config:
+      mode: runtime
+      query: "For job transition prediction, which demographic factor matters most, and what combination of factors also plays an important role?"
+      expected_answer: "Gender matters most. The interaction of gender, ethnicity, and region also plays an important role."
+      evidence_quote: "We further establish that demographics, most notably gender, but also the interaction of gender, ethnicity, and region, play an important role in predicting job transitions."
+      response: "Gender is the most important demographic factor."

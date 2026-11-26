@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
+
+from gemini_client import DEFAULT_MODEL
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -17,6 +20,9 @@ def _path_from_env(name: str, default: Path) -> Path:
 def load_environment() -> None:
     env_file = find_dotenv(usecwd=True)
     if env_file:
+        flags = getattr(os.stat(env_file), "st_flags", 0)
+        if flags & getattr(stat, "SF_DATALESS", 0):
+            return
         load_dotenv(env_file, override=False)
 
 
@@ -31,6 +37,7 @@ class Settings:
     chunk_overlap: int
     batch_size: int
     top_k: int
+    diagnostics_dir: Path = PROJECT_ROOT / "data/diagnostics"
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -44,11 +51,14 @@ class Settings:
             embedding_model=os.getenv(
                 "RAG_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
             ),
-            llm_model=os.getenv("RAG_LLM_MODEL", "gpt-4o-mini"),
+            llm_model=os.getenv("RAG_LLM_MODEL", DEFAULT_MODEL),
             chunk_size=int(os.getenv("RAG_CHUNK_SIZE", "800")),
             chunk_overlap=int(os.getenv("RAG_CHUNK_OVERLAP", "120")),
             batch_size=int(os.getenv("RAG_BATCH_SIZE", "64")),
             top_k=int(os.getenv("RAG_TOP_K", "5")),
+            diagnostics_dir=_path_from_env(
+                "RAG_DIAGNOSTICS_DIR", PROJECT_ROOT / "data/diagnostics"
+            ),
         )
 
     def validate(self) -> None:
