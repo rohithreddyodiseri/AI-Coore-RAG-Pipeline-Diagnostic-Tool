@@ -1,6 +1,43 @@
 # Open RAGBench RAG Pipeline
 
-## Code Milestone
+## Diagnostic frontend and backend
+
+The repository now separates `backend/` (Python packages and tests) and
+`frontend/` (Next.js). Shared API contracts live in `docs/`; configurations,
+fixtures, and runtime data remain at the repository root. Utility scripts live
+in `scripts/`. Run Python commands from the repository root.
+
+```bash
+source .venv/bin/activate
+python -m pip install -e ".[dev,server]"
+npm --prefix frontend ci
+python scripts/dev.py
+```
+
+Open http://127.0.0.1:3000. This starts both servers with matching local registry
+credentials. Connect an application and send OpenTelemetry traces to see health
+metrics, execution details, artifacts, and span timings. Flagged executions are
+automatically queued for the diagnostic judge after trace assembly. The UI
+shows progress, validated mechanisms, cited evidence, and retryable errors. See [frontend setup](frontend/README.md) and
+[backend layout](backend/README.md).
+
+```text
+backend/
+  src/                  Python engine, OTLP server, and reference pipeline
+  tests/                Python tests
+frontend/
+  src/app/              Next.js pages and API gateway
+  src/features/         Trace explorer and span inspector
+  src/components/       Shared UI components
+  src/hooks/            API data loading
+  src/lib/              API types and backend connection
+configs/                Diagnostic configurations
+fixtures/               Shared telemetry fixtures
+docs/                   API contracts, architecture, and guides
+scripts/                Development launcher and dataset download
+data/, runs/            Local runtime data (ignored by Git)
+pyproject.toml          Python packaging and test configuration
+```
 
 ## Project Overview
 
@@ -52,7 +89,7 @@ The application loads this file when running the indexing and question-answering
 From the project root, run:
 
 ```bash
-python download-dataset.py
+python scripts/download-dataset.py
 ```
 
 The script downloads `vectara/open_ragbench` into:
@@ -64,7 +101,7 @@ data/open_ragbench
 To change the dataset repository or download location:
 
 ```bash
-python download-dataset.py --repo-id vectara/open_ragbench --output data/open_ragbench
+python scripts/download-dataset.py --repo-id vectara/open_ragbench --output data/open_ragbench
 ```
 
 For authenticated Hugging Face downloads, create a read token at:
@@ -77,7 +114,7 @@ Set it in the terminal before running the download script:
 read -s -p "Hugging Face token: " HF_TOKEN
 echo
 export HF_TOKEN
-python download-dataset.py
+python scripts/download-dataset.py
 ```
 
 The download script reads `HF_TOKEN` from the terminal environment. It does not automatically load tokens from `.env`.
@@ -279,9 +316,9 @@ The tests cover:
 - Loading abstracts, section text, and tables while excluding image data.
 - Limiting the number of loaded corpus files.
 - Generating stable chunk identifiers.
-- The spans each query emits, including failures, flags and content capture (`tests/test_telemetry.py`).
-- The web UI endpoint (`tests/test_web.py`).
-- The OTLP adapter's output against `docs/telemetry.schema.json`, including the step-0 fixtures (`tests/test_otel_adapter.py`).
+- The spans each query emits, including failures, flags and content capture (`backend/tests/test_telemetry.py`).
+- The web UI endpoint (`backend/tests/test_web.py`).
+- The OTLP adapter's output against `docs/telemetry.schema.json`, including the step-0 fixtures (`backend/tests/test_otel_adapter.py`).
 
 The pipeline tests use fake retrieval and a fake model, so they need no index or API key. These tests do not measure retrieval accuracy or validate live model answers.
 
@@ -378,7 +415,7 @@ applies the manifest's corpus mutations to a hard-linked full copy, then builds 
 corrupted Chroma collection from the clean collection's stored embeddings while
 omitting FP1's deleted document. Runtime faults do not require re-embedding unchanged
 documents. The independent reference pipeline implementation lives in
-`src/rag_diagnostic/reference_pipeline.py` and executes text loading, chunking,
+`backend/src/rag_diagnostic/reference_pipeline.py` and executes text loading, chunking,
 sentence-transformer embeddings, Chroma vector search, prompt construction and
 Gemini generation. Shared configuration, corpus loading and telemetry formats
 keep its inputs and observations compatible with the main pipeline.

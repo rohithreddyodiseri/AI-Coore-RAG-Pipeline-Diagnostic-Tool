@@ -10,6 +10,10 @@
     "Rate": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
     "Sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "Category": { "enum": ["FP1", "FP2", "FP3", "FP4", "FP5", "FP6", "FP7"] },
+    "Mechanism": {
+      "type": "string",
+      "enum": ["MISSING_SOURCE_INFORMATION", "EXTRACTION_LOSS", "CHUNK_FRAGMENTATION", "EMBEDDING_MISMATCH", "INDEXING_FAILURE", "TOP_K_EXCLUSION", "RERANKING_DEGRADATION", "SIMILARITY_CUTOFF_EXCLUSION", "TOKEN_BUDGET_EXCLUSION", "CONTEXT_TRUNCATION", "CONTEXT_DELIVERY_LOSS", "INCORRECT_EVIDENCE_EXTRACTION", "PARTIAL_EVIDENCE_EXTRACTION", "OUTPUT_FORMAT_VIOLATION", "SPECIFICITY_MISMATCH", "UNCLASSIFIED_OPERATIONAL_FAILURE"]
+    },
     "Stage": {
       "enum": ["corpus", "parsing", "chunking", "document_embedding", "indexing", "query_rewrite", "query_embedding", "retrieval", "reranking", "context_assembly", "generation"]
     },
@@ -362,6 +366,9 @@
         "primary_stage": { "anyOf": [{ "$ref": "#/$defs/Stage" }, { "type": "null" }] },
         "category": { "anyOf": [{ "$ref": "#/$defs/Category" }, { "type": "null" }] },
         "confidence": { "$ref": "#/$defs/Rate" },
+        "mechanism": { "anyOf": [{ "$ref": "#/$defs/Mechanism" }, { "type": "null" }] },
+        "evaluations": { "type": "array", "items": { "type": "object" } },
+        "unresolved_mechanisms": { "type": "array", "items": { "type": "object" } },
         "contributing_stages": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/Stage" } },
         "unresolved_categories": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/Category" } },
         "summary": { "type": "string" },
@@ -372,7 +379,8 @@
             "required": ["stage", "category", "finding", "citations"],
             "properties": {
               "stage": { "$ref": "#/$defs/Stage" },
-              "category": { "$ref": "#/$defs/Category" },
+              "category": { "anyOf": [{ "$ref": "#/$defs/Category" }, { "type": "null" }] },
+              "mechanism": { "$ref": "#/$defs/Mechanism" },
               "finding": { "type": "string" },
               "citations": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/Citation" } }
             }
@@ -397,10 +405,13 @@
           "then": {
             "properties": {
               "primary_stage": { "$ref": "#/$defs/Stage" },
-              "category": { "$ref": "#/$defs/Category" },
               "confidence": { "type": "number" },
               "evidence_trail": { "minItems": 1 }
-            }
+            },
+            "anyOf": [
+              { "properties": { "category": { "$ref": "#/$defs/Category" } } },
+              { "required": ["mechanism"], "properties": { "mechanism": { "$ref": "#/$defs/Mechanism" } } }
+            ]
           },
           "else": { "properties": { "primary_stage": { "type": "null" }, "category": { "type": "null" } } }
         },
