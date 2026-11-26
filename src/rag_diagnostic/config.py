@@ -13,6 +13,7 @@ from gemini_client import DEFAULT_MODEL
 
 @dataclass(frozen=True)
 class DiagnosticConfig:
+    assessment_mode: str = "stage"
     deep_k: int = 20
     abstain_below: float = 0.7
     judge: str = "llm"
@@ -27,6 +28,8 @@ class DiagnosticConfig:
     runs_dir: str = "runs"
 
     def __post_init__(self):
+        if self.assessment_mode not in ("stage", "legacy_fp"):
+            raise ValueError("assessment_mode must be stage or legacy_fp")
         for key in ("abstain_below", "held_out_fraction"):
             value = getattr(self, key)
             if type(value) not in (int, float) or not 0 < value <= 1:

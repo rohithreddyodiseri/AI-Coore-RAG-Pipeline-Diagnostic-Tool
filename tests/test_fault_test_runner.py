@@ -55,8 +55,9 @@ def test_fp4_repairs_only_verbatim_evidence_once(make_engine, trace):
     verdict = engine.diagnose(trace)
     assert client.calls == 2
     assert verdict.failure_category == "FP4"
-    assert verdict.evaluations[3]["evidence"][0]["quote"] in (
-        trace_artifacts(trace)["context.text"]["text"]
+    assert (
+        verdict.evaluations[3]["evidence"][0]["quote"]
+        in (trace_artifacts(trace)["context.text"]["text"])
     )
 
 
@@ -163,12 +164,14 @@ def test_suite_injects_all_boundaries_and_scores_without_oracle(tmp_path, monkey
         return verdict
 
     client = FakeClient(reply)
-    judge = LLMJudge("test-model", tmp_path / "cache.json", client=client)
+    judge = LLMJudge(
+        "test-model", tmp_path / "cache.json", client=client, assessment_mode="legacy_fp"
+    )
     result = run_suite(
         manifest,
         tmp_path / "benchmark",
         replace(Settings.from_env(), corpus_dir=corpus, top_k=5),
-        DiagnosticConfig(),
+        DiagnosticConfig(assessment_mode="legacy_fp"),
         judge=judge,
         show_progress=True,
     )
@@ -223,7 +226,11 @@ def test_replay_keeps_failed_cases_in_denominator(tmp_path):
             }
         )
     )
-    result = replay_suite(source, tmp_path / "replay", DiagnosticConfig(judge="unavailable"))
+    result = replay_suite(
+        source,
+        tmp_path / "replay",
+        DiagnosticConfig(judge="unavailable", assessment_mode="legacy_fp"),
+    )
     assert result["executions"] == result["attempted"] == result["errors"] == 1
     assert result["answered"] == result["abstained"] == 0
     assert result["suite_accuracy"] == 0

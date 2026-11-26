@@ -42,6 +42,7 @@ Create a file named `.env` in the project root and add:
 
 ```dotenv
 GEMINI_API_KEY=your_gemini_api_key
+GEMINI_API_KEY=your_gemini_api_key
 ```
 
 The application loads this file when running the indexing and question-answering commands. A Gemini API key is required for answer generation, but not for local embedding or indexing.
@@ -174,6 +175,7 @@ RAG_CHROMA_DIR
 RAG_COLLECTION
 RAG_EMBEDDING_MODEL
 RAG_LLM_MODEL
+GEMINI_MIN_REQUEST_INTERVAL_SECONDS
 RAG_CHUNK_SIZE
 RAG_CHUNK_OVERLAP
 RAG_BATCH_SIZE
@@ -272,13 +274,16 @@ python -m pytest
 
 ````
 
-The repository includes three tests covering:
+The tests cover:
 
 - Loading abstracts, section text, and tables while excluding image data.
 - Limiting the number of loaded corpus files.
 - Generating stable chunk identifiers.
+- The spans each query emits, including failures, flags and content capture (`tests/test_telemetry.py`).
+- The web UI endpoint (`tests/test_web.py`).
+- The OTLP adapter's output against `docs/telemetry.schema.json`, including the step-0 fixtures (`tests/test_otel_adapter.py`).
 
-These tests do not measure retrieval accuracy or validate live model answers.
+The pipeline tests use fake retrieval and a fake model, so they need no index or API key. These tests do not measure retrieval accuracy or validate live model answers.
 
 ## Release notes
 
@@ -333,6 +338,23 @@ run ID, evidence, confidence and unresolved checks in its JSON report.
 See [the telemetry contract and operating guide](docs/diagnostic-tool.md).
 
 ## Fault benchmark
+
+The default stage-based benchmark covers all 15 technical mechanisms, the
+operational fallback, a multi-fault execution, and two controls:
+
+```bash
+rag-diagnose fault-test-runner --config configs/mechanism-benchmark.json \
+  --output-dir data/fault_runs/mechanisms
+```
+
+Use `--prepare-only` to inspect the 19 captured executions before inference,
+`--mechanism OUTPUT_FORMAT_VIOLATION` for a quick targeted run, and `--resume`
+to retry failed diagnoses. See [mechanism cases and scoring](docs/mechanism-benchmark.md).
+
+### Legacy FP1–FP7 benchmark
+
+The full-corpus workflow below requires `assessment_mode: "legacy_fp"` in its
+diagnostic configuration.
 
 With Open RAGBench downloaded and Gemini credentials available, run the suite.
 
@@ -434,3 +456,4 @@ rag-diagnose fault-test-runner \
 Gemini requests retry transient HTTP 429/500/502/503/504 responses up to three
 attempts. Reports retain API failures as errors, include them in overall accuracy,
 and expose per-category validation reasons when a diagnosis abstains.
+````

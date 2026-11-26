@@ -67,7 +67,9 @@ def test_ask_logs_each_pipeline_stage(tmp_path, monkeypatch):
         "query",
         "query_embedding",
         "retrieval",
+        "selection",
         "prompt_construction",
+        "generation_request",
         "generation",
         "query",
         "execution",
@@ -75,9 +77,12 @@ def test_ask_logs_each_pipeline_stage(tmp_path, monkeypatch):
     assert events[1]["inputs"]["texts"] == ["What is the diagnostic answer?"]
     assert events[1]["outputs"] == [[0.1, 0.2]]
     assert events[2]["outputs"][0]["text"] == "The diagnostic answer is 42."
-    assert events[3]["outputs"]["input"].startswith("Question:")
-    assert events[4]["outputs"]["output_text"] == "It is 42."
-    assert events[5]["outputs"]["answer"] == "It is 42."
+    assert events[4]["outputs"]["input"].startswith("Question:")
+    assert events[6]["outputs"]["output_text"] == "It is 42."
+    assert events[7]["outputs"]["answer"] == "It is 42."
+    request = events[5]["inputs"]
+    assert request["prompt"] == client.requests[0]["contents"]
+    assert request["delivered_context"] in request["prompt"]
 
 
 def test_ask_logs_failed_stage(tmp_path, monkeypatch):

@@ -1,7 +1,9 @@
-"""Seven-category LLM diagnosis of immutable trace artifacts, without gold answers.
+"""Stage-based technical diagnosis of immutable traces, without gold answers.
 
 Semantic decisions belong to the LLM. Python validates the response schema,
 provenance, boundary observability, confidence, and summary consistency.
+The FP1–FP7 implementation below is retained only for explicit legacy_fp mode;
+the default dispatches to stage_diagnosis.
 """
 
 from __future__ import annotations
@@ -651,6 +653,9 @@ class DiagnosticEngine:
         pipeline: dict | None = None,
         run: RunRecord | None = None,
     ) -> Verdict:
+        if self.config.assessment_mode == "stage":
+            from rag_diagnostic.stage_diagnosis import diagnose_stages
+            return diagnose_stages(self, trace, run_id, pipeline, run)
         if pipeline is None:
             pipeline = (
                 trace.get("pipeline", {"adapter": "captured_trace"})

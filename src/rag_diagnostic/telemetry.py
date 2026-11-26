@@ -152,7 +152,9 @@ def hydrate_index_artifacts(payload, root):
                 "recorded_at": "index_build",
                 "index_run_id": manifest["run_id"],
                 "output_data": captured[name],
+                "complete": True,
             }
+        stages["document_embedding"]["configuration"] = manifest.get("embedding_configuration", {})
         stages["indexing"] = {
             "status": "completed",
             "recorded_at": "index_build",
@@ -161,6 +163,8 @@ def hydrate_index_artifacts(payload, root):
                 "collection": manifest["collection"],
                 "chunks": manifest["chunks"],
                 "embedding_model": manifest["embedding_model"],
+                "indexed_ids": manifest.get("indexed_ids"),
+                "complete": manifest.get("index_membership_complete", False),
             },
         }
         payload.setdefault("corpus", captured["corpus"])

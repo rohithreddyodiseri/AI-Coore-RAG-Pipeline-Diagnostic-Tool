@@ -1,5 +1,9 @@
 # RAG Diagnostic Engine Architecture
 
+> The default architecture has migrated to stage-based technical mechanisms.
+> See [the current architecture](docs/stage-diagnosis.md). The FP1–FP7 architecture
+> below documents only explicit `assessment_mode: "legacy_fp"` compatibility mode.
+
 ## Purpose
 
 The diagnostic engine identifies where and why a RAG execution failed without using a reference answer. It analyzes the evidence captured at pipeline boundaries, asks a low-temperature LLM judge to assess the Seven Failure Points of RAG (FP1–FP7), and then applies deterministic validation before accepting any attribution.

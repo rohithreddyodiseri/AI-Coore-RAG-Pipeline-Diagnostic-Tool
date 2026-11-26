@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from gemini_client import GeminiInferenceEngine
+from rag_diagnostic.judge_logging import log_judge_event
 from rag_diagnostic.taxonomy import CATEGORIES, STAGES
 
 CITATION_SCHEMA = {
@@ -187,52 +188,101 @@ def citation_spans(artifact):
     return spans
 
 
-class LLMJudge:
-    VERSION = 7
+def judge_prompt(payload):
+    """Serialize exactly the artifact view delivered to the model."""
+    artifacts = {}
+    for artifact_id, artifact in payload.get("artifacts", {}).items():
+        spans = citation_spans(artifact)
+        artifacts[artifact_id] = (
+            artifact
+            if len(spans) == 1
+            else {
+                **{key: value for key, value in artifact.items() if key != "text"},
+                "spans": spans,
+            }
+        )
+    return json.dumps({**payload, "artifacts": artifacts}, sort_keys=True, allow_nan=False)
 
-    def __init__(self, model, cache_path, client=None, max_output_tokens=6000):
+
+class LLMJudge:
+    VERSION = 8
+
+    def __init__(
+        self, model, cache_path, client=None, max_output_tokens=6000, assessment_mode="stage"
+    ):
         self.model, self.cache_path = model, Path(cache_path)
         self._inference = GeminiInferenceEngine(model, client=client)
         self.max_output_tokens = max_output_tokens
+        if assessment_mode not in ("stage", "legacy_fp"):
+            raise ValueError("assessment_mode must be stage or legacy_fp")
+        self.assessment_mode = assessment_mode
+        if assessment_mode == "stage":
+            from rag_diagnostic.mechanisms import OUTPUT_SCHEMA as schema
+            from rag_diagnostic.mechanisms import SYSTEM_PROMPT as prompt
+
+            self.schema, self.instructions = schema, prompt
+        else:
+            self.schema, self.instructions = OUTPUT_SCHEMA, SYSTEM_PROMPT
 
     def describe(self):
         return {
             "provider": "gemini",
+            "assessment_mode": self.assessment_mode,
             "transport_version": GeminiInferenceEngine.VERSION,
             "model": self.model,
             "temperature": 0.1,
             "prompt_version": self.VERSION,
-            "prompt_sha256": hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
+            "prompt_sha256": hashlib.sha256(self.instructions.encode()).hexdigest(),
             "schema_sha256": hashlib.sha256(
-                json.dumps(OUTPUT_SCHEMA, sort_keys=True).encode()
+                json.dumps(self.schema, sort_keys=True).encode()
             ).hexdigest(),
             "max_output_tokens": self.max_output_tokens,
         }
 
     def evaluate_trace(self, payload):
-        artifacts = {}
-        for artifact_id, artifact in payload.get("artifacts", {}).items():
-            spans = citation_spans(artifact)
-            if len(spans) == 1:
-                artifacts[artifact_id] = artifact
-            else:
-                artifacts[artifact_id] = {
-                    **{key: value for key, value in artifact.items() if key != "text"},
-                    "spans": spans,
-                }
-        prompt = json.dumps(
-            {**payload, "artifacts": artifacts}, sort_keys=True, allow_nan=False
-        )
+        prompt = judge_prompt(payload)
         key = hashlib.sha256(
             json.dumps([self.describe(), prompt], sort_keys=True).encode()
         ).hexdigest()
         cache = json.loads(self.cache_path.read_text()) if self.cache_path.exists() else {}
+        source = "cache (no API call)" if key in cache else "Gemini API"
+        log_judge_event(
+            "INPUT",
+            source=source,
+            cache_key=key,
+            model=self.model,
+            system_instruction=self.instructions,
+            contents=prompt,
+            temperature=0.1,
+            max_output_tokens=self.max_output_tokens,
+            response_mime_type="application/json",
+            response_json_schema=self.schema,
+        )
         if key not in cache:
-            response = self._inference.judge_trace_result(
-                prompt=prompt,
-                system_instruction=SYSTEM_PROMPT,
-                response_schema=OUTPUT_SCHEMA,
-                max_output_tokens=self.max_output_tokens,
+            try:
+                response = self._inference.judge_trace_result(
+                    prompt=prompt,
+                    system_instruction=self.instructions,
+                    response_schema=self.schema,
+                    max_output_tokens=self.max_output_tokens,
+                )
+            except Exception as error:
+                log_judge_event(
+                    "ERROR",
+                    model=self.model,
+                    cache_key=key,
+                    error_type=type(error).__name__,
+                    code=getattr(error, "code", None),
+                )
+                raise
+            log_judge_event(
+                "OUTPUT",
+                source=source,
+                cache_key=key,
+                raw_output=response.text,
+                completion_status=response.completion_status,
+                actual_model=response.model_version,
+                response_id=response.response_id,
             )
             # Preserve malformed/refused/truncated replies so replay still abstains.
             cache[key] = {
@@ -243,11 +293,13 @@ class LLMJudge:
             }
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
             self.cache_path.write_text(json.dumps(cache, sort_keys=True))
+        else:
+            log_judge_event("OUTPUT", source=source, cache_key=key, **cache[key])
         return JudgeResponse(
             **cache[key],
             cache_key=key,
-            request_instructions=SYSTEM_PROMPT,
-            response_schema=OUTPUT_SCHEMA,
+            request_instructions=self.instructions,
+            response_schema=self.schema,
         )
 
 
@@ -257,5 +309,8 @@ def build_judge(config) -> Judge:
     if config.judge != "llm":
         raise ValueError("judge must be llm or unavailable; production attribution uses an LLM")
     return LLMJudge(
-        config.judge_model, config.judge_cache, max_output_tokens=config.judge_max_output_tokens
+        config.judge_model,
+        config.judge_cache,
+        max_output_tokens=config.judge_max_output_tokens,
+        assessment_mode=config.assessment_mode,
     )

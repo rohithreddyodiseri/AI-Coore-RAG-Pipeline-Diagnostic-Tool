@@ -12,6 +12,14 @@ secrets, or an ignored local `.env` file.
 
 ## 2. Configure the client application
 
+For this reference pipeline, put the OTel settings in `.env.otel` at the
+repository root. Start with `.env.otel.example` and replace the placeholder
+header with the generated onboarding value. The pipeline loads `.env.otel`
+automatically when tracing starts for `rag-pipeline serve` or `rag-pipeline ask`.
+Values already exported in the process environment take precedence.
+Keep Gemini credentials in the existing `.env`. The private `.env.otel` file
+is ignored by Git, while `.env.otel.example` can be shared with teammates.
+
 Set the exact values returned in the onboarding package:
 
 ```bash

@@ -10,6 +10,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+from gemini_client import GeminiAPIError
 from rag_diagnostic.config import DiagnosticConfig
 from rag_diagnostic.diagnose import Diagnoser
 from rag_diagnostic.diagnostic_engine import DiagnosticEngine
@@ -17,6 +18,7 @@ from rag_diagnostic.ingestion import TelemetryIngestor
 from rag_diagnostic.telemetry import flag_execution
 
 DEFAULT_ADAPTER = "rag_diagnostic.adapters.open_ragbench:build"
+MAX_PROVIDER_RETRY_SECONDS = 60.0
 
 
 def _load_factory(spec):
@@ -53,6 +55,25 @@ def _parser():
     )
     parser.add_argument("--json", action="store_true", help="Print the structured report")
     return parser
+
+
+def _poll_with_provider_retry(ingestor, args):
+    """Keep continuous watch alive while a retryable judge outage clears."""
+    delay = max(5.0, args.poll_interval)
+    while True:
+        try:
+            return ingestor.poll(args.trace_dir, artifact_root=args.artifact_root)
+        except GeminiAPIError as error:
+            if args.once or not error.retryable:
+                raise
+            print(
+                f"Diagnostic judge temporarily unavailable ({error}); "
+                f"retrying unacknowledged runs in {delay:g} seconds.",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(delay)
+            delay = min(MAX_PROVIDER_RETRY_SECONDS, delay * 2)
 
 
 def _ingestion_main(argv):
@@ -96,9 +117,7 @@ def _ingestion_main(argv):
         if not 0 < args.poll_interval <= 60:
             raise ValueError("--poll-interval must be between zero and 60 seconds")
         while True:
-            for verdict, destination in ingestor.poll(
-                args.trace_dir, artifact_root=args.artifact_root
-            ):
+            for verdict, destination in _poll_with_provider_retry(ingestor, args):
                 print(json.dumps(verdict.to_dict()) if args.json else verdict.render(), flush=True)
                 print(f"Diagnostic report: {destination}", file=sys.stderr, flush=True)
             if args.once:

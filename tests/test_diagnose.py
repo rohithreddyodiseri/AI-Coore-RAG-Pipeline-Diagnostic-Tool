@@ -215,10 +215,13 @@ def test_context_omissions_are_observed_and_validated(make_engine, trace, use_re
         rejected = deepcopy(reply)
         row = rejected["evaluations"][2]
         row["evidence"].pop(0)
-        row["contributing_stages"] = [{
-            "stage": "context_assembly", "rationale": "Same stage",
-            "evidence": row["evidence"],
-        }]
+        row["contributing_stages"] = [
+            {
+                "stage": "context_assembly",
+                "rationale": "Same stage",
+                "evidence": row["evidence"],
+            }
+        ]
         return rejected
 
     engine, client = make_engine(judge_reply)
@@ -294,7 +297,10 @@ def test_same_trace_reuses_llm_result_and_logs_each_run(make_engine, trace):
     reloaded = DiagnosticEngine(
         engine.config,
         LLMJudge(
-            engine.config.judge_model, engine.config.judge_cache, FakeClient("must not be called")
+            engine.config.judge_model,
+            engine.config.judge_cache,
+            FakeClient("must not be called"),
+            assessment_mode="legacy_fp",
         ),
     )
     assert reloaded.diagnose(trace).to_dict(False) == first.to_dict(False)
@@ -334,6 +340,7 @@ def test_pipeline_adapter_uses_trace_judge_without_corpus_or_gold(tmp_path):
         runs_dir=str(tmp_path / "runs"),
         judge_cache=str(tmp_path / "judge.json"),
         inspect_corpus=False,
+        assessment_mode="legacy_fp",
     )
 
     def reply(request):
@@ -352,7 +359,10 @@ def test_pipeline_adapter_uses_trace_judge_without_corpus_or_gold(tmp_path):
         return output
 
     client = FakeClient(reply)
-    diagnoser = Diagnoser(config, LLMJudge(config.judge_model, config.judge_cache, client))
+    diagnoser = Diagnoser(
+        config,
+        LLMJudge(config.judge_model, config.judge_cache, client, assessment_mode="legacy_fp"),
+    )
     query = "Who built the tower? Return JSON."
     verdict = diagnoser.diagnose(query, TraceOnlyPipeline())
     assert verdict.failure_category == "FP5"
@@ -360,7 +370,9 @@ def test_pipeline_adapter_uses_trace_judge_without_corpus_or_gold(tmp_path):
 
 
 def test_unavailable_judge_abstains(tmp_path, trace):
-    engine = DiagnosticEngine(DiagnosticConfig(runs_dir=str(tmp_path)), UnavailableJudge())
+    engine = DiagnosticEngine(
+        DiagnosticConfig(runs_dir=str(tmp_path), assessment_mode="legacy_fp"), UnavailableJudge()
+    )
     assert engine.diagnose(trace).status == "abstained"
 
 
@@ -369,7 +381,7 @@ def test_pipeline_capture_failure_is_recorded(tmp_path):
         def run(self, query):
             raise RuntimeError("pipeline unavailable")
 
-    config = DiagnosticConfig(runs_dir=str(tmp_path))
+    config = DiagnosticConfig(runs_dir=str(tmp_path), assessment_mode="legacy_fp")
     with pytest.raises(RuntimeError, match="pipeline unavailable"):
         Diagnoser(config, UnavailableJudge()).diagnose("Why?", Broken())
     record = json.loads((tmp_path / "diagnoses.jsonl").read_text())
@@ -394,6 +406,7 @@ def test_real_adapter_corpus_inspection_declares_scope(tmp_path):
         inspect_corpus=True,
         runs_dir=str(tmp_path / "runs"),
         judge_cache=str(tmp_path / "judge.json"),
+        assessment_mode="legacy_fp",
     )
     observed = []
 
@@ -414,7 +427,10 @@ def test_real_adapter_corpus_inspection_declares_scope(tmp_path):
         return result
 
     client = FakeClient(reply)
-    diagnoser = Diagnoser(config, LLMJudge(config.judge_model, config.judge_cache, client))
+    diagnoser = Diagnoser(
+        config,
+        LLMJudge(config.judge_model, config.judge_cache, client, assessment_mode="legacy_fp"),
+    )
     verdict = diagnoser.diagnose("When did the ferry first sail?", RecordedTarget())
     assert verdict.failure_category == "FP1"
     assert observed[0]["corpus.manifest"]["complete"] is True

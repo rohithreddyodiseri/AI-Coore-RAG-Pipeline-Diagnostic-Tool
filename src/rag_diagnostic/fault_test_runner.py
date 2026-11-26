@@ -1,4 +1,4 @@
-"""Execute and score the seven-category fault benchmark."""
+"""Execute and score technical mechanism cases or the explicit legacy FP benchmark."""
 
 from __future__ import annotations
 
@@ -124,17 +124,15 @@ def _clone_index(progress, source_pipeline, target_pipeline, deleted_doc_id):
     source = source_pipeline._open_collection(create=False)
     target = target_pipeline._open_collection()
     total = source.count()
-    deleted_count = len(
-        source.get(where={"doc_id": deleted_doc_id}, include=["metadatas"])["ids"]
-    )
+    deleted_count = len(source.get(where={"doc_id": deleted_doc_id}, include=["metadatas"])["ids"])
     if deleted_count == 0:
-        raise ValueError(
-            f"FP1 target document {deleted_doc_id!r} was not found in the clean index"
-        )
+        raise ValueError(f"FP1 target document {deleted_doc_id!r} was not found in the clean index")
     expected = total - deleted_count
     if target.count() == expected:
         task = progress.add_task(
-            "Reusing corrupted index", total=expected, completed=expected,
+            "Reusing corrupted index",
+            total=expected,
+            completed=expected,
             detail=f"{expected:,} chunks",
         )
         progress.update(task, completed=expected)
@@ -145,11 +143,13 @@ def _clone_index(progress, source_pipeline, target_pipeline, deleted_doc_id):
     copied = 0
     for offset in range(0, total, 1000):
         rows = source.get(
-            limit=1000, offset=offset,
+            limit=1000,
+            offset=offset,
             include=["documents", "metadatas", "embeddings"],
         )
         keep = [
-            i for i, metadata in enumerate(rows["metadatas"])
+            i
+            for i, metadata in enumerate(rows["metadatas"])
             if metadata.get("doc_id") != deleted_doc_id
         ]
         if keep:
@@ -165,7 +165,8 @@ def _clone_index(progress, source_pipeline, target_pipeline, deleted_doc_id):
             )
             copied += len(keep)
         progress.update(
-            task, completed=min(offset + len(rows["ids"]), total),
+            task,
+            completed=min(offset + len(rows["ids"]), total),
             detail=f"{copied:,} chunks",
         )
     return copied
@@ -174,6 +175,10 @@ def _clone_index(progress, source_pipeline, target_pipeline, deleted_doc_id):
 def run_suite(
     manifest, output_dir, settings, config, *, judge=None, show_progress=False, resume=False
 ):
+    if config.assessment_mode != "legacy_fp":
+        from rag_diagnostic.mechanism_benchmark import run_mechanism_suite
+
+        return run_mechanism_suite(output_dir, config, judge=judge, resume=resume)
     with _progress(show_progress) as progress:
         return _run_suite(manifest, output_dir, settings, config, judge, progress, resume)
 
@@ -242,7 +247,9 @@ def _run_suite(manifest, output_dir, settings, config, judge, progress, resume):
             baseline_count = 0
         if baseline_count:
             task = progress.add_task(
-                "Reusing clean index", total=baseline_count, completed=baseline_count,
+                "Reusing clean index",
+                total=baseline_count,
+                completed=baseline_count,
                 detail=f"{baseline_count:,} chunks",
             )
             progress.update(task, completed=baseline_count)
@@ -252,7 +259,8 @@ def _run_suite(manifest, output_dir, settings, config, judge, progress, resume):
             )
         indexer._embedder = baseline._embedder
         deleted_target = next(
-            entry["target_location"] for entry in registry["test_cases"].values()
+            entry["target_location"]
+            for entry in registry["test_cases"].values()
             if entry["failure_type"] == "missing_content"
         )
         deleted = deleted_target["doc_id"]
@@ -471,6 +479,10 @@ def _run_suite(manifest, output_dir, settings, config, judge, progress, resume):
 
 
 def replay_suite(source, output_dir, config, *, show_progress=False):
+    if config.assessment_mode != "legacy_fp":
+        from rag_diagnostic.mechanism_benchmark import run_mechanism_suite
+
+        return run_mechanism_suite(output_dir, config, replay_dir=source)
     """Score the saved observations again with the current judge and validation."""
     with _progress(show_progress) as progress:
         return _replay_suite(source, output_dir, config, progress)
@@ -570,8 +582,66 @@ def main(argv=None):
     parser.add_argument("--replay-dir", type=Path, help="Re-score saved traces without generation")
     parser.add_argument("--no-progress", action="store_true", help="Disable animated progress bars")
     parser.add_argument("--resume", action="store_true", help="Resume a failed benchmark run")
+    parser.add_argument(
+        "--log-llm",
+        action="store_true",
+        help="Print Gemini judge input and raw output to stderr, including cached replies",
+    )
+    parser.add_argument(
+        "--prepare-only",
+        action="store_true",
+        help="Write mechanism traces and labels without inference",
+    )
+    from rag_diagnostic.mechanisms import MECHANISM_STAGE
+
+    parser.add_argument(
+        "--mechanism",
+        action="append",
+        choices=list(MECHANISM_STAGE),
+        help="Run only this mechanism (repeatable; stage mode)",
+    )
     args = parser.parse_args(argv)
+    from rag_diagnostic.judge_logging import judge_io_logging
+
+    with judge_io_logging(args.log_llm):
+        return _execute_benchmark(args)
+
+
+def _execute_benchmark(args):
     try:
+        config = DiagnosticConfig.from_file(args.config)
+        if config.assessment_mode == "stage":
+            from rag_diagnostic.mechanism_benchmark import run_mechanism_suite
+
+            report = run_mechanism_suite(
+                args.output_dir,
+                config,
+                mechanisms=args.mechanism,
+                prepare_only=args.prepare_only,
+                resume=args.resume,
+                replay_dir=args.replay_dir,
+            )
+            if report["status"] == "prepared":
+                print(
+                    f"Prepared {report['attempted']} cases: {args.output_dir / 'ground_truth.json'}"
+                )
+                return
+            print(f"Technical cases: {report['attempted']}; errors: {report['errors']}")
+            for key in (
+                "suite_accuracy",
+                "primary_accuracy",
+                "stage_accuracy",
+                "fault_abstention_rate",
+                "mechanism_precision",
+                "mechanism_recall",
+                "control_accuracy",
+            ):
+                value = report[key]
+                print(f"{key}: {'n/a' if value is None else format(value, '.1%')}")
+            print(f"Report: {args.output_dir / 'report.json'}")
+            if report["errors"]:
+                raise SystemExit(1)
+            return
         if args.replay_dir:
             report = replay_suite(
                 args.replay_dir,

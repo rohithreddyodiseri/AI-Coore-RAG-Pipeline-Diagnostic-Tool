@@ -34,6 +34,9 @@ class IndexTelemetry:
         self.sources = set()
         self.parsed_count = self.chunk_count = self.embedding_count = 0
         self.artifacts = {}
+        self.indexed_ids = []
+        self.membership_observed = True
+        self.embedding_dimensions = set()
         # An interrupted build cannot leave the previous build advertised as current.
         self._locate("building")
 
@@ -72,6 +75,16 @@ class IndexTelemetry:
                 "doc_id": str(meta.get("doc_id", "")),
                 "text": text,
                 "metadata": meta,
+                **{
+                    key: meta.get(key)
+                    for key in (
+                        "source_page",
+                        "section",
+                        "start_offset",
+                        "end_offset",
+                        "parent_chunk_id",
+                    )
+                },
             }
             for chunk_id, text, meta in batch
         ]
@@ -87,6 +100,18 @@ class IndexTelemetry:
             ],
         )
         self.embedding_count += len(vectors)
+        self.embedding_dimensions.update(len(vector) for vector in vectors)
+
+    def indexed(self, batch, collection):
+        """Read back acknowledged IDs after upsert; do not infer membership from counts."""
+        ids = [item[0] for item in batch]
+        try:
+            result = collection.get(ids=ids, include=[])
+        except TypeError:
+            # A custom store without an ID lookup cannot establish index completeness.
+            self.membership_observed = False
+            return
+        self.indexed_ids.extend(result["ids"])
 
     def complete(self):
         documents, errors = [], []
@@ -130,6 +155,17 @@ class IndexTelemetry:
             "parsed_documents": self.parsed_count,
             "chunks": self.chunk_count,
             "embeddings": self.embedding_count,
+            "indexed_ids": self.indexed_ids,
+            "index_membership_complete": self.membership_observed,
+            "embedding_configuration": {
+                "model": self.settings.embedding_model,
+                "revision": None,
+                "dimension": next(iter(self.embedding_dimensions))
+                if len(self.embedding_dimensions) == 1
+                else None,
+                "preprocessing": "identity",
+                "normalized": True,
+            },
             "embedding_model": self.settings.embedding_model,
             "collection": self.settings.collection,
             "inspection_errors": errors,

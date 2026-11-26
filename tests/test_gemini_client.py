@@ -1,7 +1,5 @@
 """Shared Gemini transport contracts; API calls are mocked."""
 
-from types import SimpleNamespace
-
 import pytest
 from conftest import FakeClient
 
@@ -104,10 +102,26 @@ def test_transient_provider_error_retries_then_recovers(monkeypatch):
     assert sleeps == [2, 4]
 
 
-def test_missing_key_has_actionable_error(monkeypatch):
-    import rag_pipeline.config
+def test_exhausted_service_unavailable_is_marked_retryable(monkeypatch):
+    monkeypatch.setattr(gemini_client.time, "sleep", lambda _delay: None)
 
-    monkeypatch.setattr(rag_pipeline.config, "load_environment", lambda: None)
+    def unavailable(_request):
+        error = RuntimeError("provider payload must not escape")
+        error.code = 503
+        raise error
+
+    with pytest.raises(GeminiAPIError) as caught:
+        GeminiInferenceEngine(
+            client=FakeClient(unavailable), min_request_interval_seconds=0
+        ).generate("Question")
+    assert caught.value.code == 503
+    assert caught.value.retryable is True
+    assert "after three attempts" in str(caught.value)
+    assert "provider payload" not in str(caught.value)
+
+
+def test_missing_key_has_actionable_error(monkeypatch):
+    monkeypatch.setattr(gemini_client, "_load_environment", lambda: None)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     with pytest.raises(ValueError, match="GEMINI_API_KEY"):
@@ -115,20 +129,19 @@ def test_missing_key_has_actionable_error(monkeypatch):
 
 
 def test_environment_key_priority_without_network(monkeypatch):
-    import sys
+    from google import genai
 
-    import rag_pipeline.config
-
-    monkeypatch.setattr(rag_pipeline.config, "load_environment", lambda: None)
+    monkeypatch.setattr(gemini_client, "_load_environment", lambda: None)
     monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
     monkeypatch.setenv("GOOGLE_API_KEY", "other-test-key")
     calls = []
-    fake_google = SimpleNamespace(
-        genai=SimpleNamespace(Client=lambda **kwargs: calls.append(kwargs))
-    )
-    monkeypatch.setitem(sys.modules, "google", fake_google)
+    monkeypatch.setattr(genai, "Client", lambda **kwargs: calls.append(kwargs))
     GeminiInferenceEngine()._get_client()
-    assert calls == [{"api_key": "gemini-test-key", "vertexai": False}]
+    assert len(calls) == 1
+    assert calls[0]["api_key"] == "gemini-test-key"
+    assert calls[0]["vertexai"] is False
+    assert calls[0]["http_options"].timeout == 120000
+    assert calls[0]["http_options"].retry_options.attempts == 1
 
 
 def test_pacing_is_shared_between_engine_instances(monkeypatch):

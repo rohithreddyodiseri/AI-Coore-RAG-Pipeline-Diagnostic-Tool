@@ -29,8 +29,10 @@ class MemoryCollection:
     def count(self):
         return len(self.rows)
 
-    def get(self, where=None, include=None, limit=None, offset=0):
+    def get(self, where=None, include=None, limit=None, offset=0, ids=None):
         rows = list(self.rows.items())
+        if ids is not None:
+            rows = [row for row in rows if row[0] in ids]
         if where:
             rows = [
                 row
@@ -105,11 +107,16 @@ def semantic_judge(request):
 
 def ingestor(tmp_path, reply=semantic_judge):
     config = DiagnosticConfig(
-        runs_dir=str(tmp_path / "reports"), judge_cache=str(tmp_path / "judge.json")
+        runs_dir=str(tmp_path / "reports"),
+        judge_cache=str(tmp_path / "judge.json"),
+        assessment_mode="legacy_fp",
     )
     client = FakeClient(reply)
     return TelemetryIngestor(
-        DiagnosticEngine(config, LLMJudge(config.judge_model, config.judge_cache, client))
+        DiagnosticEngine(
+            config,
+            LLMJudge(config.judge_model, config.judge_cache, client, assessment_mode="legacy_fp"),
+        )
     ), client
 
 

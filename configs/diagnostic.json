@@ -1,4 +1,5 @@
 {
+  "assessment_mode": "stage",
   "judge": "llm",
   "judge_model": "gemini-3.5-flash-lite",
   "abstain_below": 0.7,

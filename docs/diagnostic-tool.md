@@ -2,7 +2,9 @@
 
 `rag_pipeline` emits execution records. `rag_diagnostic` consumes those records,
 inspects stage boundaries and captured corpus evidence, and returns a structured
-FP1–FP7 attribution using the Gemini LLM judge. The ingestion path does not import
+stage-based technical root-cause attribution using the Gemini LLM judge. See
+[Stage-based diagnosis](stage-diagnosis.md) for the current 15-mechanism taxonomy,
+operational fallback, validation rules and schema-v2 report. The ingestion path does not import
 or execute the reference pipeline. No reference answer or known answer location
 is required or accepted.
 
@@ -73,7 +75,9 @@ The watcher persists processed input/configuration identities in
 producer's `run_id`. Repeated deliveries and clean worker restarts skip processed
 inputs. A crash before checkpointing can repeat a report write; the judge cache
 prevents another model call for identical observed inputs. Provider errors leave
-the run unacknowledged so a supervisor can retry after resolving the error.
+the run unacknowledged. Continuous `watch` retries Gemini 429/500/502/503/504
+failures with exponential backoff capped at 60 seconds; `watch --once` and manual
+`ingest` return an error so a scheduler or caller can observe the failed attempt.
 
 ## Python interfaces
 
@@ -303,6 +307,10 @@ produces:
 ```
 
 ## Attribution and evidence limits
+
+The FP1–FP7 details below describe the explicit `assessment_mode: "legacy_fp"`
+compatibility mode. The default `stage` mode uses the technical mechanisms and
+root-cause report documented in [Stage-based diagnosis](stage-diagnosis.md).
 
 The judge evaluates every FP1–FP7 category and returns the primary category/stage,
 all supported findings/contributors, confidence, concise justifications, and exact

@@ -37,6 +37,16 @@ class InferenceResult:
 class GeminiAPIError(RuntimeError):
     """Provider failure with credentials and response payloads excluded."""
 
+    RETRYABLE_CODES = frozenset({429, 500, 502, 503, 504})
+
+    def __init__(self, message: str, *, code: int | str | None = None):
+        super().__init__(message)
+        self.code = code
+
+    @property
+    def retryable(self) -> bool:
+        return self.code in self.RETRYABLE_CODES
+
 
 class GeminiInferenceEngine:
     VERSION = 2
@@ -64,9 +74,7 @@ class GeminiInferenceEngine:
             raise ValueError("GEMINI_MIN_REQUEST_INTERVAL_SECONDS must be between 0 and 60")
         self.min_request_interval_seconds = min_request_interval_seconds
         if request_timeout_seconds is None:
-            request_timeout_seconds = float(
-                os.getenv("GEMINI_REQUEST_TIMEOUT_SECONDS", "120")
-            )
+            request_timeout_seconds = float(os.getenv("GEMINI_REQUEST_TIMEOUT_SECONDS", "120"))
         if (
             type(request_timeout_seconds) not in (int, float)
             or not math.isfinite(request_timeout_seconds)
@@ -135,7 +143,9 @@ class GeminiInferenceEngine:
                 message += " Check model availability; configure RAG_LLM_MODEL and judge_model."
             elif code == 429:
                 message += " Rate limit exceeded; increase GEMINI_MIN_REQUEST_INTERVAL_SECONDS."
-            raise GeminiAPIError(message) from None
+            elif code == 503:
+                message += " Service unavailable after three attempts; retry later."
+            raise GeminiAPIError(message, code=code) from None
         candidates = getattr(response, "candidates", None) or []
         reason = getattr(candidates[0], "finish_reason", None) if candidates else None
         reason = getattr(reason, "name", reason)

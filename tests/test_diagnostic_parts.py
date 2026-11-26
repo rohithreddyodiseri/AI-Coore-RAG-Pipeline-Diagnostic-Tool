@@ -15,6 +15,7 @@ from rag_diagnostic.trace import Context, QueryTrace, ScoredChunk
 def test_default_is_llm_as_judge(tmp_path):
     config = DiagnosticConfig(judge_cache=str(tmp_path / "cache.json"))
     assert isinstance(build_judge(config), LLMJudge)
+    assert build_judge(config).assessment_mode == "stage"
 
 
 @pytest.mark.parametrize("key", ["reference_answer", "gold", "expected_answer", "fault_type"])
@@ -98,11 +99,11 @@ def test_label_categories_are_optional(tmp_path):
 def test_cache_identity_includes_model_prompt_and_schema(tmp_path, trace):
     cache = tmp_path / "judge.json"
     client = FakeClient(report(trace))
-    first = LLMJudge("pinned-v1", cache, client)
+    first = LLMJudge("pinned-v1", cache, client, assessment_mode="legacy_fp")
     first.evaluate_trace({"trace": trace})
     first.evaluate_trace({"trace": trace})
     assert client.calls == 1
-    second = LLMJudge("pinned-v2", cache, client)
+    second = LLMJudge("pinned-v2", cache, client, assessment_mode="legacy_fp")
     second.evaluate_trace({"trace": trace})
     assert client.calls == 2
     second.VERSION += 1
@@ -123,7 +124,7 @@ def test_cache_identity_includes_model_prompt_and_schema(tmp_path, trace):
 )
 def test_invalid_config(settings):
     with pytest.raises(ValueError):
-        DiagnosticConfig(**settings)
+        DiagnosticConfig(**settings, assessment_mode="legacy_fp")
 
 
 def test_removed_matching_config_is_rejected(tmp_path):

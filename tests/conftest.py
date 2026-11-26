@@ -107,11 +107,18 @@ def trace():
 def make_engine(tmp_path):
     def make(reply, **overrides):
         config = DiagnosticConfig(
-            runs_dir=str(tmp_path / "runs"), judge_cache=str(tmp_path / "judge.json"), **overrides
+            runs_dir=str(tmp_path / "runs"),
+            judge_cache=str(tmp_path / "judge.json"),
+            **overrides,
+            assessment_mode="legacy_fp",
         )
         client = FakeClient(reply)
         judge = LLMJudge(
-            config.judge_model, config.judge_cache, client, config.judge_max_output_tokens
+            config.judge_model,
+            config.judge_cache,
+            client,
+            config.judge_max_output_tokens,
+            assessment_mode="legacy_fp",
         )
         return DiagnosticEngine(config, judge), client
 
@@ -155,3 +162,80 @@ class RecordedTarget:
             "snapshot_id": "test-corpus-v1",
             "scope": "all test source documents",
         }
+
+
+@pytest.fixture
+def spans(monkeypatch):
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from rag_pipeline import telemetry
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider(resource=Resource.create({"service.name": "reference-rag"}))
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(telemetry, "tracer", provider.get_tracer("test"))
+    yield exporter
+    provider.shutdown()
+
+
+@pytest.fixture
+def make_pipeline(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from rag_pipeline.config import Settings
+    from rag_pipeline.pipeline import RAGPipeline
+
+    def make(*, chunks=None, error=None):
+        class Client:
+            def __init__(self):
+                self.models = self
+                self.requests = []
+
+            def generate_content(self, **kwargs):
+                self.requests.append(kwargs)
+                if error is not None:
+                    raise error
+                return FakeClient("Use hybrid search and reranking.").generate_content(**kwargs)
+
+        rows = (
+            chunks
+            if chunks is not None
+            else [
+                (
+                    "chunk-a",
+                    "paper-1",
+                    "Hybrid search combines keyword and vector retrieval.",
+                    0.88,
+                ),
+                ("chunk-b", "paper-2", "Reranking improves relevance.", 0.80),
+            ]
+        )
+
+        class Collection:
+            def count(self):
+                return len(rows)
+
+            def query(self, **kwargs):
+                selected = rows[: kwargs["n_results"]]
+                return {
+                    "ids": [[r[0] for r in selected]],
+                    "documents": [[r[2] for r in selected]],
+                    "metadatas": [[{"doc_id": r[1], "title": f"Paper {r[1]}"} for r in selected]],
+                    "distances": [[1 - r[3] for r in selected]],
+                }
+
+        settings = replace(
+            Settings.from_env(),
+            diagnostics_dir=tmp_path / "diagnostics",
+            chroma_dir=tmp_path / "chroma",
+            top_k=5,
+        )
+        pipeline = RAGPipeline(settings, client=Client())
+        monkeypatch.setattr(pipeline, "_open_collection", lambda create=True: Collection())
+        monkeypatch.setattr(pipeline, "_embed", lambda texts: [[1.0, 0.0] for _ in texts])
+        return pipeline
+
+    return make

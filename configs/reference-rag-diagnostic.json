@@ -1,0 +1,9 @@
+{
+  "judge": "llm",
+  "judge_model": "gemini-3.5-flash-lite",
+  "abstain_below": 0.7,
+  "max_judge_input_chars": 100000,
+  "judge_max_output_tokens": 6000,
+  "runs_dir": "runs/otlp/demo/6c808d0544234ec0b46c33e2a1627fb6",
+  "judge_cache": "runs/otlp/demo/6c808d0544234ec0b46c33e2a1627fb6/judge-cache.json"
+}

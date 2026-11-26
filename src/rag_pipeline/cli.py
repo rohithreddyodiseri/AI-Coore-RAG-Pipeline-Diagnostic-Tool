@@ -8,6 +8,7 @@ from pathlib import Path
 from rag_pipeline.config import Settings
 from rag_pipeline.corpus import OpenRAGBenchLoader
 from rag_pipeline.pipeline import RAGPipeline
+from rag_pipeline.telemetry import setup_tracing
 
 
 def _parser(defaults: Settings) -> argparse.ArgumentParser:
@@ -39,6 +40,9 @@ def _parser(defaults: Settings) -> argparse.ArgumentParser:
         default=defaults.diagnostics_dir,
         help="directory for per-query JSONL pipeline traces",
     )
+    web = commands.add_parser("serve", help="Run the reference RAG web UI")
+    web.add_argument("--host", default="127.0.0.1")
+    web.add_argument("--port", type=int, default=8000)
     return parser
 
 
@@ -46,6 +50,7 @@ def main(argv: list[str] | None = None) -> None:
     defaults = Settings.from_env()
     args = _parser(defaults).parse_args(argv)
     pipeline: RAGPipeline | None = None
+    provider = None
 
     try:
         if args.command == "index":
@@ -68,6 +73,14 @@ def main(argv: list[str] | None = None) -> None:
                 progress=lambda count: print(f"Indexed {count} chunks", end="\r"),
             )
             print(f"Indexed {total} chunks.{' ' * 20}")
+            return
+
+        provider = setup_tracing()
+        if args.command == "serve":
+            from rag_pipeline.web import serve
+
+            pipeline = RAGPipeline(defaults)
+            serve(pipeline, args.host, args.port)
             return
 
         settings = replace(
@@ -93,6 +106,9 @@ def main(argv: list[str] | None = None) -> None:
         if pipeline is not None and pipeline.last_trace_path is not None:
             print(f"Diagnostics: {pipeline.last_trace_path}", file=sys.stderr)
         raise SystemExit(1) from error
+    finally:
+        if provider is not None:
+            provider.shutdown()
 
 
 if __name__ == "__main__":

@@ -104,9 +104,16 @@ def diagnoser(tmp_path, reply):
     from conftest import FakeClient
 
     config = DiagnosticConfig(
-        runs_dir=str(tmp_path / "runs"), judge_cache=str(tmp_path / "judge.json")
+        runs_dir=str(tmp_path / "runs"),
+        judge_cache=str(tmp_path / "judge.json"),
+        assessment_mode="legacy_fp",
     )
-    return Diagnoser(config, LLMJudge(config.judge_model, config.judge_cache, FakeClient(reply)))
+    return Diagnoser(
+        config,
+        LLMJudge(
+            config.judge_model, config.judge_cache, FakeClient(reply), assessment_mode="legacy_fp"
+        ),
+    )
 
 
 def test_adapter_collects_actual_corpus(tmp_path, corpus):
@@ -202,9 +209,13 @@ def test_direct_query_cli_executes_target_once_and_writes_report(
         return result
 
     config = DiagnosticConfig(
-        runs_dir=str(tmp_path / "runs"), judge_cache=str(tmp_path / "judge.json")
+        runs_dir=str(tmp_path / "runs"),
+        judge_cache=str(tmp_path / "judge.json"),
+        assessment_mode="legacy_fp",
     )
-    judge = LLMJudge(config.judge_model, config.judge_cache, FakeClient(reply))
+    judge = LLMJudge(
+        config.judge_model, config.judge_cache, FakeClient(reply), assessment_mode="legacy_fp"
+    )
     connected = Diagnoser(config, judge)
     factories = []
 

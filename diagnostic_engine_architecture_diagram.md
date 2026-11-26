@@ -1,5 +1,9 @@
 # Diagnostic Engine Architecture Diagram
 
+The current stage-based architecture is documented in
+[Stage-based diagnosis](docs/stage-diagnosis.md), including its Mermaid diagram.
+The diagrams below show the prior FP1–FP7 compatibility architecture.
+
 ```mermaid
 flowchart TB
     subgraph Producer["RAG Pipeline — Telemetry Producer"]

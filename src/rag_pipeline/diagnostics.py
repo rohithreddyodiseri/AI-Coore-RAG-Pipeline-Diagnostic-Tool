@@ -71,6 +71,44 @@ class PipelineTrace:
         operation: Callable[[], T],
         output: Callable[[T], Any] | None = None,
     ) -> T:
+        from rag_pipeline.telemetry import stage_span
+
+        canonical = "context_assembly" if stage == "prompt_construction" else stage
+        evidence_input = inputs
+        if stage == "generation":
+            evidence_input = {
+                "prompt": inputs["input"],
+                "system_instruction": inputs["instructions"],
+                "model": inputs["model"],
+            }
+        with stage_span(canonical, k=inputs.get("k"), input_data=evidence_input) as span:
+            result = self._capture(stage, inputs, operation, output)
+            recorded = self.events[-1]
+            value = recorded.get("outputs")
+            if stage == "prompt_construction":
+                value = {"text": value["context"], "chunk_ids": value["chunk_ids"]}
+            elif stage == "generation":
+                value = value["output_text"]
+            elif stage == "retrieval":
+                value = [
+                    {
+                        key: item[key]
+                        for key in ("chunk_id", "text", "rank", "score")
+                        if key in item and item[key] is not None
+                    }
+                    | ({"doc_id": item["doc_id"]} if item.get("doc_id") else {})
+                    for item in value
+                ]
+            span.output(value)
+            return result
+
+    def _capture(
+        self,
+        stage: str,
+        inputs: Any,
+        operation: Callable[[], T],
+        output: Callable[[T], Any] | None = None,
+    ) -> T:
         started = time.perf_counter()
         try:
             result = operation()
@@ -104,6 +142,12 @@ class PipelineTrace:
         }
         for event in self.events:
             name = event["stage"]
+            if name == "generation_request":
+                stages.setdefault("generation", {})["actual_request"] = event["inputs"]
+                continue
+            if name == "selection":
+                stages[name] = {"status": event["status"], "output_data": event.get("outputs")}
+                continue
             if name not in ("query_embedding", "retrieval", "prompt_construction", "generation"):
                 continue
             stage = {"status": event["status"], "input_data": event["inputs"]}
@@ -122,12 +166,15 @@ class PipelineTrace:
                     }
                     payload["generation_instructions"] = output["instructions"]
             elif name == "generation":
+                actual = stages.get("generation", {}).get("actual_request")
                 stage["input_data"] = {
                     "prompt": event["inputs"]["input"],
                     "system_instruction": event["inputs"]["instructions"],
                     "model": event["inputs"]["model"],
                     "temperature": event["inputs"]["temperature"],
                 }
+                if actual is not None:
+                    stage["input_data"] = actual
                 if "outputs" in event:
                     stage["output_data"] = event["outputs"]["output_text"]
                     payload["final_answer"] = stage["output_data"]
@@ -136,6 +183,14 @@ class PipelineTrace:
                 if name == "retrieval":
                     stage["k"] = event["inputs"]["k"]
             stages[name] = stage
+        embedding = stages.get("query_embedding")
+        if embedding is not None:
+            vectors = embedding.get("output_data", [])
+            embedding["configuration"] = {
+                "model": pipeline.get("settings", {}).get("embedding_model"),
+                "revision": None, "preprocessing": "identity", "normalized": True,
+                "dimension": len(vectors[0]) if vectors else None,
+            }
         return payload
 
     def publish(self, payload: dict[str, Any], *, failed: bool = False) -> None:

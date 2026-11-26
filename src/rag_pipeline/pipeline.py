@@ -37,6 +37,7 @@ class RAGPipeline:
         self._embedder: Any = None
         self._collection: Any = None
         self.last_trace_path: Path | None = None
+        self.last_trace_id: str | None = None
         self._active_trace: ContextVar[PipelineTrace | None] = ContextVar(
             "rag_pipeline_trace", default=None
         )
@@ -113,6 +114,7 @@ class RAGPipeline:
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=self.settings.chunk_size,
             chunk_overlap=self.settings.chunk_overlap,
+            add_start_index=True,
         )
         batch: list[tuple[str, str, dict[str, str | int]]] = []
         indexed = 0
@@ -131,6 +133,7 @@ class RAGPipeline:
                 metadatas=[item[2] for item in batch],
                 embeddings=vectors,
             )
+            telemetry.indexed(batch, collection)
             indexed += len(batch)
             batch.clear()
             if progress:
@@ -138,8 +141,15 @@ class RAGPipeline:
 
         for document in documents:
             telemetry.parsed(document)
-            for chunk_number, text in enumerate(splitter.split_text(document.text)):
-                metadata = {**document.metadata, "chunk": chunk_number}
+            for chunk_number, split in enumerate(splitter.create_documents([document.text])):
+                text = split.page_content
+                start = split.metadata["start_index"]
+                metadata = {
+                    **document.metadata,
+                    "chunk": chunk_number,
+                    "start_offset": start,
+                    "end_offset": start + len(text),
+                }
                 batch.append((self._chunk_id(document, chunk_number, text), text, metadata))
                 if len(batch) >= self.settings.batch_size:
                     save_batch()
@@ -222,6 +232,18 @@ class RAGPipeline:
         return results
 
     def generate(self, query: str, context: str) -> str:
+        events = self._active_trace.get()
+        if events is not None:
+            events.record(
+                "generation_request",
+                {
+                    "prompt": f"Question:\n{query}\n\nContext:\n{context}",
+                    "delivered_context": context,
+                    "system_instruction": self.generation_instructions,
+                    "model": self.settings.llm_model,
+                    "temperature": self.generation_temperature,
+                },
+            )
         return self._inference.generate(
             prompt=f"Question:\n{query}\n\nContext:\n{context}",
             system_instruction=self.generation_instructions,
@@ -246,6 +268,20 @@ class RAGPipeline:
         return metadata
 
     def execute(
+        self, query: str, *, failure_reason: str | None = None
+    ) -> tuple[str, list[SearchResult], dict[str, Any]]:
+        from rag_pipeline.telemetry import execution_span
+
+        self.last_trace_id = None
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("query must be a nonempty string")
+        with execution_span(query, failure_reason) as execution:
+            self.last_trace_id = execution.trace_id
+            answer, sources, payload = self._execute(query, failure_reason=failure_reason)
+            execution.finish(answer, self.generation_instructions)
+            return answer, sources, payload
+
+    def _execute(
         self, query: str, *, failure_reason: str | None = None
     ) -> tuple[str, list[SearchResult], dict[str, Any]]:
         """Execute once through the same hooks for CLI queries and diagnostic runs."""
@@ -287,6 +323,29 @@ class RAGPipeline:
 
             def build_prompt() -> dict[str, Any]:
                 sources = self.context_sources(results)
+                selected_ids = {r.chunk_id for r in sources}
+                events.record(
+                    "selection",
+                    {},
+                    outputs={
+                        "complete": True,
+                        "candidate_count": len(results),
+                        "selected_count": len(sources),
+                        "decisions": [
+                            {
+                                "chunk_id": r.chunk_id,
+                                "selected": r.chunk_id in selected_ids,
+                                "score": r.score,
+                                "reason": "included"
+                                if r.chunk_id in selected_ids
+                                else "unspecified",
+                            }
+                            for r in results
+                        ],
+                        "similarity_filter": "not_used",
+                        "token_budget_filter": "not_used",
+                    },
+                )
                 context = self.assemble_context(query, sources)
                 return {
                     "instructions": self.generation_instructions,
