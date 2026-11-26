@@ -18,7 +18,7 @@ flowchart TB
 
 ## Primary taxonomy
 
-`src/rag_diagnostic/mechanisms.py` defines the stage order, mechanism labels,
+`backend/src/rag_diagnostic/mechanisms.py` defines the stage order, mechanism labels,
 criteria, and judge schema in one versioned configuration. Both prompting and
 validation consume it.
 

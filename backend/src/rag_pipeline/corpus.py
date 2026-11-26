@@ -36,7 +36,7 @@ class OpenRAGBenchLoader:
         if not self.corpus_dir.is_dir():
             raise FileNotFoundError(
                 f"Corpus directory not found: {self.corpus_dir}. "
-                "Run `python download-dataset.py` first or pass --corpus-dir."
+                "Run `python scripts/download-dataset.py` first or pass --corpus-dir."
             )
 
         paths = sorted(self.corpus_dir.glob("*.json"))

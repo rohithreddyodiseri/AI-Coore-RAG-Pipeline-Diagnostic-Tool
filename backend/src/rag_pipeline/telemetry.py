@@ -51,7 +51,7 @@ def setup_tracing() -> Any:
     from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
 
     # Deployment environment variables take precedence over local settings.
-    load_dotenv(Path(__file__).resolve().parents[2] / '.env.otel', override=False)
+    load_dotenv(Path(__file__).resolve().parents[3] / '.env.otel', override=False)
 
     endpoint = os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") or os.getenv(
         "OTEL_EXPORTER_OTLP_ENDPOINT"

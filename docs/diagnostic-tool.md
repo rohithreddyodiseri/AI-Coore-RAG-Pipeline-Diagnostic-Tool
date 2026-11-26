@@ -371,7 +371,7 @@ telemetry requires no adapter. Runtime inputs are queries and captured execution
 Run verification with:
 
 ```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=src python3 -m pytest
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=backend/src python3 -m pytest
 ```
 
 Tests exercise real emission, artifact lineage, corpus inspection, independent

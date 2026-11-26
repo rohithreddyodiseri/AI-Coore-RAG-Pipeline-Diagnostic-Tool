@@ -7,7 +7,7 @@ from pathlib import Path
 
 from rag_diagnostic.diagnostic_engine import DiagnosticEngine
 from rag_diagnostic.mechanism_cases import build_cases
-from rag_diagnostic.mechanisms import VERSION
+from rag_diagnostic.mechanisms import MECHANISM_STAGE, VERSION
 
 
 def _write(path, data):
@@ -59,6 +59,23 @@ def summarize(rows):
     fp = sum(r["false_positives"] for r in valid)
     fn = sum(r["false_negatives"] for r in rows)
     controls = [r for r in rows if r["kind"] == "control"]
+    expected_sets = [set(r["expected_faults"]) for r in rows]
+    predicted_sets = [set(r["predicted_faults"]) for r in rows]
+    mechanism_metrics = {}
+    for mechanism in MECHANISM_STAGE:
+        support = sum(mechanism in expected for expected in expected_sets)
+        predicted = sum(mechanism in labels for labels in predicted_sets)
+        true_positives = sum(
+            mechanism in expected and mechanism in labels
+            for expected, labels in zip(expected_sets, predicted_sets, strict=True)
+        )
+        mechanism_metrics[mechanism] = dict(
+            support=support,
+            predicted=predicted,
+            true_positives=true_positives,
+            precision=ratio(true_positives, predicted),
+            recall=ratio(true_positives, support),
+        )
     return dict(
         attempted=len(rows),
         errors=sum("error" in r for r in rows),
@@ -70,6 +87,7 @@ def summarize(rows):
         control_accuracy=ratio(sum(r["correct"] for r in controls), len(controls)),
         mechanism_precision=ratio(tp, tp + fp),
         mechanism_recall=ratio(tp, tp + fn),
+        mechanism_metrics=mechanism_metrics,
         confusion=[
             dict(
                 expected=(r["expected_root"] or {}).get("mechanism", "NONE"),
@@ -169,6 +187,8 @@ def run_mechanism_suite(
                 kind=case["kind"],
                 description=case["description"],
                 expected_root=case["expected_root"],
+                expected_faults=sorted(case["expected_faults"]),
+                predicted_faults=[],
                 status="diagnosis_error",
                 predicted_root=None,
                 confidence=0.0,

@@ -26,7 +26,11 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceResponse,
 )
 
+from rag_diagnostic.accuracy_runs import AccuracyRuns
+from rag_diagnostic.config import DiagnosticConfig
+from rag_diagnostic.diagnostic_jobs import DiagnosticWorker
 from rag_diagnostic.otlp_store import Store, token_digest
+from rag_diagnostic.ui_api import EXECUTION_ID, UIReadModel, parse_time
 
 LOG = logging.getLogger(__name__)
 PROTOBUF = "application/x-protobuf"
@@ -102,6 +106,8 @@ class DiagnosticServer(ThreadingHTTPServer):
         assembly_window=5,
         max_body_bytes=4 * 1024 * 1024,
         bind_and_activate=True,
+        diagnostic_config=None,
+        auto_diagnose=True,
     ):
         if not math.isfinite(assembly_window) or assembly_window < 0 or max_body_bytes <= 0:
             raise ValueError("Assembly window must be nonnegative and request size positive")
@@ -127,17 +133,47 @@ class DiagnosticServer(ThreadingHTTPServer):
         ).encode("utf-8")
         self.telemetry_schema = json.dumps(normalized, indent=2).encode("utf-8")
         self.store = Store(data_dir, Draft202012Validator(normalized), assembly_window)
+        self.ui = UIReadModel(self.store)
+        self.diagnostics = DiagnosticWorker(self.store, self.ui, diagnostic_config)
+        self.accuracy = AccuracyRuns(self.store, self.diagnostics.config)
+        self.auto_diagnose = auto_diagnose
         self.stop_worker = threading.Event()
         super().__init__(address, Handler, bind_and_activate=bind_and_activate)
 
     def serve_forever(self, poll_interval=0.5):
         worker = threading.Thread(target=self._publish, name="normalize-otlp", daemon=True)
         worker.start()
+        judge_worker = threading.Thread(target=self._diagnose, name="diagnose-otlp", daemon=True)
+        judge_worker.start()
+        accuracy_worker = threading.Thread(target=self._accuracy, name="accuracy", daemon=True)
+        accuracy_worker.start()
         try:
             super().serve_forever(poll_interval=poll_interval)
         finally:
             self.stop_worker.set()
             worker.join()
+            # A provider request may still be finishing; its durable lease makes recovery safe.
+            judge_worker.join(timeout=1)
+
+    def _accuracy(self):
+        while not self.stop_worker.is_set():
+            try:
+                if self.accuracy.run_one():
+                    continue
+            except (OSError, sqlite3.Error) as error:
+                LOG.warning("Accuracy worker error (%s)", type(error).__name__)
+            self.stop_worker.wait(1)
+
+    def _diagnose(self):
+        while not self.stop_worker.is_set():
+            try:
+                if self.auto_diagnose:
+                    self.diagnostics.enqueue_flagged()
+                if self.diagnostics.run_one():
+                    continue
+            except Exception as error:
+                LOG.warning("Diagnostic worker error (%s)", type(error).__name__)
+            self.stop_worker.wait(0.5)
 
     def _publish(self):
         while not self.stop_worker.is_set():
@@ -195,7 +231,7 @@ class Handler(BaseHTTPRequestHandler):
             elif self.command == "GET" and url.path == "/docs/telemetry.schema.json":
                 self._send(200, self.server.telemetry_schema, JSON)
             else:
-                self._registry(url)
+                self._api(url)
         except RequestError as error:
             self._error(error, is_otlp)
         except sqlite3.OperationalError:
@@ -211,6 +247,86 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 2 and parts[0].lower() == "bearer":
                 return parts[1]
         raise RequestError(401, "unauthorized", "A valid bearer token is required")
+
+    def _api(self, url):
+        if url.path == "/api/v1/apps" or url.path.startswith("/api/v1/apps/"):
+            self._registry(url)
+            return
+        if not url.path.startswith("/api/v1/"):
+            raise RequestError(404, "not_found", "Route not found")
+        account = self.server.credentials.get(token_digest(self._token()))
+        if not account:
+            raise RequestError(401, "unauthorized", "A valid registry bearer token is required")
+        if url.path == "/api/v1/accuracy-runs" or url.path.startswith("/api/v1/accuracy-runs/"):
+            self._accuracy_api(url, *account)
+            return
+        if self.command != "GET":
+            parts = url.path.removeprefix("/api/v1/").split("/")
+            if (
+                self.command == "POST"
+                and len(parts) == 3
+                and parts[0] == "traces"
+                and parts[2] == "diagnosis"
+            ):
+                row = self.server.ui.find(account[0], parts[1])
+                if row is None:
+                    raise RequestError(404, "not_found", "Execution not found")
+                if account[1] != "admin":
+                    raise RequestError(403, "forbidden", "Diagnosis administration is required")
+                run = self.server.diagnostics.request(row, retry=True)
+                self._json(202, run, no_store=True)
+                return
+            raise RequestError(405, "method_not_allowed", "Use GET for diagnostic read APIs")
+        tenant, _ = account
+        model = self.server.ui
+        if url.path in {"/api/v1/traces", "/api/v1/analytics/health"}:
+            filters = _read_filters(url.query)
+            if url.path.endswith("/health"):
+                if not all(key in filters for key in ("from", "to")):
+                    raise RequestError(400, "invalid_window", "Supply both from and to timestamps")
+                result = model.health(tenant, filters)
+            else:
+                cursor, limit = _pagination(url.query, EXECUTION_ID)
+                result = model.traces(tenant, filters, cursor, limit)
+            self._json(200, result, no_store=True)
+            return
+        parts = url.path.removeprefix("/api/v1/").split("/")
+        if len(parts) >= 2 and parts[0] == "traces":
+            row = model.find(tenant, parts[1])
+            if row is not None:
+                if parts[2:] == ["spans"]:
+                    self._json(200, model.raw_spans(row), no_store=True)
+                    return
+                detail, artifacts = model.detail(row)
+                if len(parts) == 2:
+                    self._json(200, detail, no_store=True)
+                    return
+                if len(parts) == 4 and parts[2] == "artifacts" and parts[3] in artifacts:
+                    self._json(200, artifacts[parts[3]], no_store=True)
+                    return
+        raise RequestError(404, "not_found", "Resource or route not found")
+
+    def _accuracy_api(self, url, tenant, role):
+        base = "/api/v1/accuracy-runs"
+        if url.path == base and self.command == "GET":
+            self._json(
+                200, self.server.accuracy.list(tenant) | {"can_run": role == "admin"}, no_store=True
+            )
+            return
+        if url.path == base and self.command == "POST":
+            if role != "admin":
+                raise RequestError(
+                    403, "forbidden", "Only an administrator can run the fault suite"
+                )
+            self._json(202, self.server.accuracy.start(tenant), no_store=True)
+            return
+        run_id = url.path.removeprefix(base + "/")
+        if self.command == "GET" and APP_ID.fullmatch(run_id):
+            result = self.server.accuracy.detail(tenant, run_id)
+            if result is not None:
+                self._json(200, result, no_store=True)
+                return
+        raise RequestError(404, "not_found", "Accuracy run not found")
 
     def _registry(self, url):
         base = "/api/v1/apps"
@@ -259,7 +375,13 @@ class Handler(BaseHTTPRequestHandler):
                 fields.update(dict.fromkeys(missing, "Required."))
             else:
                 path = ".".join(map(str, error.path)) or "body"
-                fields[path] = f"Invalid value ({error.validator})."
+                if path == "service_name" and error.validator in {"pattern", "type"}:
+                    fields[path] = (
+                        "Use 1–128 lowercase letters, numbers, dots, underscores, or hyphens. "
+                        "Start with a letter or number, for example my-rag-app."
+                    )
+                else:
+                    fields[path] = f"Invalid value ({error.validator})."
         if fields:
             raise RequestError(422, "invalid_registration", "Invalid app registration", fields)
         try:
@@ -363,7 +485,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def _pagination(query):
+def _pagination(query, cursor_pattern=APP_ID):
     fields = parse_qs(query, keep_blank_values=True)
     cursors = fields.get("cursor", [""])
     limits = fields.get("limit", ["50"])
@@ -371,12 +493,48 @@ def _pagination(query):
         raise RequestError(400, "invalid_pagination", "Supply a single cursor and limit")
     cursor, limit = cursors[0], limits[0]
     if (
-        (cursor and not APP_ID.fullmatch(cursor))
+        (cursor and not cursor_pattern.fullmatch(cursor))
         or not re.fullmatch(r"[0-9]{1,3}", limit)
         or not 1 <= int(limit) <= 100
     ):
         raise RequestError(400, "invalid_pagination", "Invalid cursor or limit")
     return cursor, int(limit)
+
+
+def _read_filters(query):
+    fields = parse_qs(query, keep_blank_values=True)
+    allowed = {"app_id", "environment", "status", "flagged", "diagnosis_state", "from", "to"}
+    if any(len(values) != 1 for values in fields.values()):
+        raise RequestError(400, "invalid_filter", "Supply each query parameter once")
+    filters = {key: values[0] for key, values in fields.items() if key in allowed}
+    enums = {
+        "status": {"completed", "failed"},
+        "flagged": {"true", "false"},
+        "diagnosis_state": {
+            "not_requested",
+            "queued",
+            "running",
+            "completed",
+            "failed",
+            "insufficient_evidence",
+        },
+    }
+    try:
+        for key, value in filters.items():
+            if key in enums and value not in enums[key]:
+                raise ValueError("invalid enum")
+            if key in {"from", "to"}:
+                parse_time(value)
+            if not value:
+                raise ValueError("empty filter")
+        if "from" in filters and "to" in filters:
+            if parse_time(filters["from"]) >= parse_time(filters["to"]):
+                raise ValueError("invalid range")
+    except (ValueError, OverflowError):
+        raise RequestError(
+            400, "invalid_filter", "Invalid filter or UTC reporting window"
+        ) from None
+    return filters
 
 
 def main(argv=None):
@@ -388,7 +546,14 @@ def main(argv=None):
     parser.add_argument("--contract-dir", type=Path, default=Path("docs"))
     parser.add_argument("--assembly-window", type=float, default=5)
     parser.add_argument("--max-body-bytes", type=int, default=4 * 1024 * 1024)
+    parser.add_argument("--diagnostic-config", type=Path, help="Stage judge configuration JSON")
+    parser.add_argument(
+        "--no-auto-diagnose", action="store_true", help="Require explicit diagnosis requests"
+    )
     args = parser.parse_args(argv)
+    from dotenv import load_dotenv
+
+    load_dotenv(override=False)
     logging.basicConfig(level=logging.INFO)
     try:
         credentials = json.loads(os.environ.get("RAG_DIAGNOSTIC_REGISTRY_TOKENS", "{}"))
@@ -400,6 +565,8 @@ def main(argv=None):
             public_url=args.public_url,
             assembly_window=args.assembly_window,
             max_body_bytes=args.max_body_bytes,
+            diagnostic_config=DiagnosticConfig.from_file(args.diagnostic_config),
+            auto_diagnose=not args.no_auto_diagnose,
         )
     except (OSError, ValueError) as error:
         parser.error(str(error))

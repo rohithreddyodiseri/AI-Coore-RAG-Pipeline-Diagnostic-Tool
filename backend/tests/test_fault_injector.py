@@ -264,7 +264,7 @@ def test_example_manifest_covers_all_seven_categories():
     from rag_pipeline.fault_injector import STAGES
 
     manifest = yaml.safe_load(
-        (Path(__file__).resolve().parents[1] / "manifests/faults.example.yaml").read_text()
+        (Path(__file__).resolve().parents[2] / "manifests/faults.example.yaml").read_text()
     )
     cases = manifest["test_cases"]
     assert len(cases) == 7

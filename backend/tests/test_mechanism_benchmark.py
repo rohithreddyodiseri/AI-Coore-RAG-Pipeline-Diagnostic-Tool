@@ -144,3 +144,8 @@ def test_abstention_errors_and_false_contributors_are_penalized():
         ),
     )
     assert extra["root_correct"] and not extra["correct"] and extra["false_positives"] == 1
+    metrics = summarize([abstained, extra])["mechanism_metrics"]
+    assert metrics["EMBEDDING_MISMATCH"]["precision"] == 1
+    assert metrics["EMBEDDING_MISMATCH"]["recall"] == 0.5
+    assert metrics["INDEXING_FAILURE"]["precision"] == 0
+    assert metrics["INDEXING_FAILURE"]["recall"] is None

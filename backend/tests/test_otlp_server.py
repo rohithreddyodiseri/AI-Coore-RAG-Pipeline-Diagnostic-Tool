@@ -26,7 +26,7 @@ from opentelemetry.proto.trace.v1.trace_pb2 import Span  # noqa: E402
 
 from rag_diagnostic.server import JSON, OTLP_PATH, PROTOBUF, DiagnosticServer, Handler  # noqa: E402
 
-CONTRACTS = Path(__file__).resolve().parents[1] / "docs"
+CONTRACTS = Path(__file__).resolve().parents[2] / "docs"
 ADMIN = "admin-" + 32 * "a"
 VIEWER = "viewer-" + 32 * "v"
 OTHER = "other-" + 32 * "b"
@@ -301,3 +301,178 @@ def test_otlp_json_wire_errors_and_body_limit(server):
         },
     )
     assert status == 413
+
+
+def validate_ui(name, body):
+    schema = json.loads((CONTRACTS / "ui-api.schema.json").read_text())
+    Draft202012Validator(
+        {**schema, "$ref": f"#/$defs/{name}"}, format_checker=FormatChecker()
+    ).validate(body)
+
+
+def test_ui_reads_real_executions_artifacts_spans_and_health(server):
+    package = json.loads(register(server)[2])
+    key = app_token(package)
+    root = span(
+        1,
+        name="rag.query",
+        parent=0,
+        attrs={
+            "rag.telemetry.version": "1.0",
+            "rag.execution.status": "failed",
+            "rag.query.text": "Why?",
+        },
+    )
+    stage = span(
+        2,
+        attrs={
+            "rag.stage": "generation",
+            "rag.stage.status": "failed",
+            "rag.stage.input_json": '{"prompt":"Answer the question"}',
+            "error.type": "ConnectionError",
+        },
+    )
+    request = span_request("reference-rag", [root, stage])
+    request.resource_spans[0].resource.attributes.add(
+        key="deployment.environment.name"
+    ).value.string_value = "staging"
+    assert export(server, request, key)[0] == 200
+    # Visibility does not depend on the background spool publisher or a judge.
+    status, headers, body = call(server, "GET", "/api/v1/traces", VIEWER)
+    assert status == 200 and headers["Cache-Control"] == "no-store"
+    listing = json.loads(body)
+    validate_ui("ExecutionList", listing)
+    execution = listing["items"][0]
+    assert execution["environment"] == "staging"
+    assert execution["status"] == "failed" and execution["flagged"]
+    assert execution["diagnosis_state"] == "not_requested"
+    assert listing["next_cursor"] is None
+    path = f"/api/v1/traces/{execution['execution_id']}"
+    detail = json.loads(call(server, "GET", path, VIEWER)[2])
+    validate_ui("TraceDetail", detail)
+    assert detail["latest_live_diagnosis"] is None
+    assert not detail["replay_capabilities"]["judge_only"]["available"]
+    assert detail["graph"]["nodes"][0]["stage"] == "generation"
+    artifact_path = path + "/artifacts/generation.input_data"
+    artifact = json.loads(call(server, "GET", artifact_path, VIEWER)[2])
+    validate_ui("Artifact", artifact)
+    assert artifact["content"] == {"prompt": "Answer the question"}
+    assert (
+        json.loads(call(server, "GET", path + "/artifacts/query", VIEWER)[2])["content"] == "Why?"
+    )
+    raw = json.loads(call(server, "GET", path + "/spans", VIEWER)[2])
+    spans = raw["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    assert len(spans) == 2
+    assert spans[0]["traceId"] == root.trace_id.hex()
+    assert spans[1]["parentSpanId"] == root.span_id.hex()
+    for suffix in ("", "/spans", "/artifacts/query"):
+        assert call(server, "GET", path + suffix, OTHER)[0] == 404
+        assert call(server, "GET", path + suffix, key)[0] == 401
+    window = "from=1970-01-01T00:00:00Z&to=1970-01-02T00:00:00Z"
+    dashboard = json.loads(call(server, "GET", f"/api/v1/analytics/health?{window}", VIEWER)[2])
+    validate_ui("Dashboard", dashboard)
+    assert dashboard["totals"] == {
+        "observed_traces": 1,
+        "runtime_failed_traces": 1,
+        "flagged_traces": 1,
+        "analyzed_flagged_traces": 0,
+        "abstained_traces": 0,
+        "abstention_rate": None,
+    }
+    assert dashboard["latency_bottlenecks"] == [
+        {"stage": "generation", "sample_count": 1, "avg_ms": 1.0}
+    ]
+    for filters in (
+        "environment=production",
+        "status=completed",
+        "flagged=false",
+        "diagnosis_state=completed",
+        "to=1970-01-01T00:00:00.001Z",
+    ):
+        result = json.loads(call(server, "GET", "/api/v1/traces?" + filters, VIEWER)[2])
+        assert result["items"] == []
+    assert json.loads(call(server, "GET", "/api/v1/traces", OTHER)[2])["items"] == []
+    other_health = json.loads(call(server, "GET", f"/api/v1/analytics/health?{window}", OTHER)[2])
+    assert other_health["totals"]["observed_traces"] == 0
+
+
+def test_ui_pagination_and_multiple_executions_in_one_trace(server):
+    package = json.loads(register(server)[2])
+    roots = [
+        span(
+            i,
+            name="rag.query",
+            parent=0,
+            attrs={
+                "rag.telemetry.version": "1.0",
+                "rag.execution.status": "completed",
+            },
+        )
+        for i in (1, 3)
+    ]
+    stages = [
+        span(
+            i + 1,
+            parent=i,
+            attrs={
+                "rag.stage": "retrieval",
+                "rag.stage.status": "completed",
+            },
+        )
+        for i in (1, 3)
+    ]
+    assert (
+        export(server, span_request("reference-rag", roots + stages), app_token(package))[0] == 200
+    )
+    page1 = json.loads(call(server, "GET", "/api/v1/traces?limit=1", VIEWER)[2])
+    assert len(page1["items"]) == 1 and page1["next_cursor"]
+    page2 = json.loads(
+        call(server, "GET", f"/api/v1/traces?limit=1&cursor={page1['next_cursor']}", VIEWER)[2]
+    )
+    assert len(page2["items"]) == 1 and page2["next_cursor"] is None
+    assert page1["items"] != page2["items"]
+    for page in (page1, page2):
+        path = f"/api/v1/traces/{page['items'][0]['execution_id']}"
+        raw = json.loads(call(server, "GET", path + "/spans", VIEWER)[2])
+        assert len(raw["resourceSpans"][0]["scopeSpans"][0]["spans"]) == 2
+        detail = json.loads(call(server, "GET", path, VIEWER)[2])
+        validate_ui("TraceDetail", detail)
+        assert len(detail["graph"]["nodes"]) == 1
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "status=broken",
+        "flagged=1",
+        "diagnosis_state=unknown",
+        "environment=",
+        "from=2026-01-01",
+        "to=nonsense",
+        "status=failed&status=completed",
+        "cursor=bad",
+        "limit=0",
+        "from=2026-02-01T00:00:00Z&to=2026-01-01T00:00:00Z",
+    ],
+)
+def test_ui_rejects_invalid_filters(server, query):
+    assert call(server, "GET", "/api/v1/traces?" + query, VIEWER)[0] == 400
+
+
+def test_ui_requires_auth_and_reporting_window(server):
+    assert call(server, "GET", "/api/v1/traces")[0] == 401
+    assert call(server, "GET", "/api/v1/analytics/health", VIEWER)[0] == 400
+    assert call(server, "POST", "/api/v1/traces", ADMIN)[0] == 405
+    assert call(server, "GET", "/api/v1/traces/not-an-execution", VIEWER)[0] == 404
+
+
+@pytest.mark.parametrize("name", ["My RAG App", "UPPERCASE", "bad/name", "x" * 129])
+def test_registration_explains_invalid_service_names(server, name):
+    status, _, body = register(server, name=name)
+    assert status == 422
+    error = json.loads(body)
+    assert error["code"] == "invalid_registration"
+    assert "lowercase" in error["field_errors"]["service_name"]
+    assert "my-rag-app" in error["field_errors"]["service_name"]
+    assert json.loads(call(server, "GET", "/api/v1/apps", VIEWER)[2])["items"] == []
+    assert register(server, name="my-rag-app")[0] == 201

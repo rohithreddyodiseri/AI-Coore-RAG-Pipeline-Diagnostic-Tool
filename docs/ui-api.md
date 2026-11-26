@@ -8,6 +8,41 @@ Validate each body against the named definition at `#/$defs/<Name>`. The
 The example file's `artifacts_by_id` map supplies individual `Artifact`
 responses for evidence link mocks.
 
+## Implemented telemetry server routes
+
+The local Python server implements the registry routes, `GET /traces`,
+`GET /traces/{execution_id}`, artifact reads, and `GET /analytics/health` below.
+It also exposes `GET /traces/{execution_id}/spans`, returning OTLP-shaped JSON
+with hexadecimal trace/span IDs for the span inspector. Reads use registry
+admin or viewer credentials, enforce tenant scope, and return `Cache-Control:
+no-store`. Execution IDs are opaque and cursors follow execution-ID ordering.
+
+Health counts describe received supported RAG executions. Sampling coverage is
+unknown. Flagged executions are queued after trace assembly, including a backfill
+of existing flagged captures on restart. The judge runs separately from ingestion;
+the OTLP acknowledgment does not wait for the provider. State progresses through
+`queued` and `running` to `completed`, `failed`, or `insufficient_evidence`.
+Completed work and its evidence are persisted per app and tenant; leases prevent
+concurrent processing and recover interrupted jobs after 60 seconds without a
+heartbeat. Failures are retried only by an explicit admin request.
+
+`POST /traces/{execution_id}/diagnosis` requests diagnosis or retries failed work.
+It requires registry admin credentials and returns 202 `DiagnosticRun`. Repeated
+requests during queued/running/completed states return the existing run. It also
+supports unflagged executions. `--no-auto-diagnose` disables automatic scheduling.
+Missing query content produces `insufficient_evidence` without calling the judge.
+
+`latest_live_diagnosis` includes the validated result, audit fingerprints, and
+technical `verdict.mechanism`. Technical diagnoses have a null legacy FP category;
+they are not mapped to FP1–FP7. `verdict.evaluations` and
+`verdict.unresolved_mechanisms` expose individual mechanism checks and missing
+evidence. Citation artifact IDs resolve through the existing artifact endpoint to
+the exact captured judge evidence. Health analyzed/abstention counts use completed
+live diagnoses; FP category counts remain zero for technical diagnoses. Replay
+capabilities remain unavailable. Standalone diagnostic-run listing, benchmark,
+and replay routes below describe the planned contract and are not implemented.
+The live UI does not substitute examples for missing results.
+
 ## Routes
 
 All routes are relative to `/api/v1` and use JSON. Scope every lookup to the
@@ -26,6 +61,7 @@ bodies. Use 404 for resources outside the tenant's scope.
 | Benchmark reports | `GET /benchmarks` | `cursor`, `limit` | 200 `BenchmarkList` |
 | Benchmark detail | `GET /benchmarks/{benchmark_id}` | — | 200 `BenchmarkReport` |
 | Trace explorer | `GET /traces` | `cursor`, `limit`, optional `from`, `to`, `app_id`, `environment`, `status`, `flagged`, `diagnosis_state` | 200 `ExecutionList` |
+| Request or retry diagnosis | `POST /traces/{execution_id}/diagnosis` | — | 202 `DiagnosticRun` |
 | Trace and verdict | `GET /traces/{execution_id}` | — | 200 `TraceDetail` |
 | Evidence detail | `GET /traces/{execution_id}/artifacts/{artifact_id}` | — | 200 `Artifact` |
 | Audit log | `GET /diagnostic-runs` | `cursor`, `limit`, optional `execution_id`, `source`, `state` | 200 `RunList` |
@@ -70,7 +106,7 @@ match their response enums. All IDs except OpenTelemetry IDs are opaque to the U
   known, observed stage timings. Use `sample_count` to show how many
   observations contributed to each mean. Return zero for empty category
   buckets. Count only the primary FP1–FP7 category once per diagnosed trace.
-  Render category names using the [engine taxonomy](../src/rag_diagnostic/taxonomy.py).
+  Render category names using the [engine taxonomy](../backend/src/rag_diagnostic/taxonomy.py).
   Display `sampled` or `unknown` coverage alongside KPIs when applicable.
 - Use benchmark `actual_labels` as rows and `predicted_labels` as columns.
   Omitted cells are zero. Represent an exact multi-label set as a sorted

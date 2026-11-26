@@ -9,7 +9,7 @@ from dotenv import find_dotenv, load_dotenv
 
 from gemini_client import DEFAULT_MODEL
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _path_from_env(name: str, default: Path) -> Path:

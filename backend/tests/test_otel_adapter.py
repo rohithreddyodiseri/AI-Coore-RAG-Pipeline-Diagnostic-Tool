@@ -13,7 +13,7 @@ from rag_pipeline.telemetry import otlp_json
 
 jsonschema = pytest.importorskip("jsonschema")
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = json.loads((ROOT / "docs" / "telemetry.schema.json").read_text())
 FIXTURES = ROOT / "fixtures" / "step0"
 

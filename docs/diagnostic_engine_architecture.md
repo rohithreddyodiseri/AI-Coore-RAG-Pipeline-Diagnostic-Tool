@@ -331,13 +331,13 @@ rag-diagnose watch --trace-dir data/diagnostics --config configs/diagnostic.json
 
 | Responsibility                                               | Module                                    |
 | ------------------------------------------------------------ | ----------------------------------------- |
-| Pipeline event capture and execution envelope                | `src/rag_pipeline/diagnostics.py`         |
-| Query execution and trace publication                        | `src/rag_pipeline/pipeline.py`            |
-| Immutable index/corpus telemetry                             | `src/rag_pipeline/index_telemetry.py`     |
-| Trace loading, flagging, and artifact verification           | `src/rag_diagnostic/telemetry.py`         |
-| Flagged-run polling and report persistence                   | `src/rag_diagnostic/ingestion.py`         |
-| Artifact normalization, validation, and verdict construction | `src/rag_diagnostic/diagnostic_engine.py` |
-| LLM prompt, JSON schema, cache, and Gemini judge             | `src/rag_diagnostic/judge.py`             |
-| FP1–FP7 definitions and compatible stages                    | `src/rag_diagnostic/taxonomy.py`          |
-| Diagnostic settings and thresholds                           | `src/rag_diagnostic/config.py`            |
-| Shared Gemini transport                                      | `src/gemini_client.py`                    |
+| Pipeline event capture and execution envelope                | `backend/src/rag_pipeline/diagnostics.py`         |
+| Query execution and trace publication                        | `backend/src/rag_pipeline/pipeline.py`            |
+| Immutable index/corpus telemetry                             | `backend/src/rag_pipeline/index_telemetry.py`     |
+| Trace loading, flagging, and artifact verification           | `backend/src/rag_diagnostic/telemetry.py`         |
+| Flagged-run polling and report persistence                   | `backend/src/rag_diagnostic/ingestion.py`         |
+| Artifact normalization, validation, and verdict construction | `backend/src/rag_diagnostic/diagnostic_engine.py` |
+| LLM prompt, JSON schema, cache, and Gemini judge             | `backend/src/rag_diagnostic/judge.py`             |
+| FP1–FP7 definitions and compatible stages                    | `backend/src/rag_diagnostic/taxonomy.py`          |
+| Diagnostic settings and thresholds                           | `backend/src/rag_diagnostic/config.py`            |
+| Shared Gemini transport                                      | `backend/src/gemini_client.py`                    |

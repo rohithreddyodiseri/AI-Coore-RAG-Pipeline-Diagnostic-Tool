@@ -46,6 +46,24 @@ CREATE TABLE IF NOT EXISTS executions (
     FOREIGN KEY(app_id, trace_id, span_id) REFERENCES spans(app_id, trace_id, span_id)
 );
 CREATE INDEX IF NOT EXISTS pending_executions ON executions(due_at) WHERE normalized_at IS NULL;
+CREATE TABLE IF NOT EXISTS diagnostic_jobs (
+    app_id TEXT NOT NULL, trace_id BLOB NOT NULL, span_id BLOB NOT NULL,
+    job_id TEXT NOT NULL UNIQUE, state TEXT NOT NULL,
+    created_at TEXT NOT NULL, finished_at TEXT,
+    result TEXT, error_code TEXT, error_message TEXT,
+    lease_owner TEXT, lease_until REAL,
+    PRIMARY KEY(app_id, trace_id, span_id),
+    FOREIGN KEY(app_id, trace_id, span_id) REFERENCES executions(app_id, trace_id, span_id)
+);
+CREATE INDEX IF NOT EXISTS diagnostic_jobs_by_state ON diagnostic_jobs(state, created_at);
+CREATE TABLE IF NOT EXISTS accuracy_runs (
+    run_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, state TEXT NOT NULL,
+    created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
+    summary TEXT, error_message TEXT
+);
+CREATE INDEX IF NOT EXISTS accuracy_runs_by_tenant ON accuracy_runs(tenant, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS active_accuracy_run_by_tenant ON accuracy_runs(tenant)
+    WHERE state IN ('queued', 'running');
 """
 
 

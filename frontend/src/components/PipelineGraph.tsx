@@ -16,7 +16,7 @@ type PipelineNode = {
   stage: string;
   label: string;
   status: string;
-  duration_ms: number;
+  duration_ms: number | null;
 };
 
 type PipelineEdge = {
@@ -65,7 +65,7 @@ export default function PipelineGraph({
                 </p>
 
                 <p className="mt-2 text-xs text-slate-400">
-                  Runtime: {node.status} · {node.duration_ms} ms
+                  Runtime: {node.status} · {node.duration_ms == null ? "Unknown duration" : `${node.duration_ms.toFixed(2)} ms`}
                 </p>
 
                 {implicated && (

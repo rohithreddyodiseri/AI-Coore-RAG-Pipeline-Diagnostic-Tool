@@ -123,3 +123,20 @@ original trace, model response, source revision and settings. A test judge can b
 injected in Python to verify runner plumbing; mock accuracy is not semantic judge
 accuracy. The full-corpus FP1–FP7 runner remains available only with
 `assessment_mode: "legacy_fp"` and the original manifest arguments.
+
+## Diagnostic Accuracy page
+
+Open **Diagnostic Accuracy** from the dashboard and select **Run fault suite**.
+The page runs the full technical suite with the diagnostic server's judge
+settings. Each run uses a fresh judge cache and may consume Gemini quota.
+One run per tenant can be queued or running at a time.
+
+Completed reports are saved under the server data directory in
+`accuracy/<tenant>/<run_id>/`. Use **Test run** to open a report and **Compare
+with** to compare overall scores and per-mechanism precision. The page shows
+runs launched from the UI. CLI runs retain their original output directories.
+
+Per-mechanism precision divides correct fault labels by all predictions for that
+label, including contributing faults. A dash indicates no predictions for that
+label. Cases with execution errors count against overall accuracy, and an
+expected abstention on a control counts as correct if all checks pass.
